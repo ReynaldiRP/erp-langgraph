@@ -33,6 +33,7 @@ def get_chat_model(
             api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
             temperature=temperature,
+            request_timeout=settings.REQUEST_TIMEOUT_SEC,
             default_headers={"HTTP-Referer": "https://fastprint.co.id", "X-Title": "FastPrint ERP LangGraph"},
         )
 
@@ -46,6 +47,7 @@ def get_chat_model(
             model=target_model,
             api_key=api_key,
             temperature=temperature,
+            request_timeout=settings.REQUEST_TIMEOUT_SEC,
         )
 
     else:

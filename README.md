@@ -78,6 +78,7 @@ erp-langgraph/
 | `ERP_API_TOKEN` | string | `""` | Static JWT token (opsional, auto-login jika kosong) |
 | `ERP_USERNAME` | string | `"admin"` | Username login ERP |
 | `ERP_PASSWORD` | string | `""` | Password login ERP |
+| `REQUEST_TIMEOUT_SEC` | integer | `15` | Timeout (detik) untuk HTTP client ERP dan request LLM (alias: `REQUEST_TIMEOUT`) |
 | `MODEL_PROVIDER` | string | `"openrouter"` | Provider LLM aktif (`openrouter` atau `openai`) |
 | `OPENROUTER_API_KEY` | string | `""` | API key OpenRouter |
 | `OPENROUTER_MODEL` | string | `"meta-llama/llama-3.3-70b-instruct:free"` | Model target di OpenRouter |

@@ -33,14 +33,14 @@ class ERPClient:
         username: Optional[str] = None,
         password: Optional[str] = None,
         default_company_id: Optional[int] = None,
-        timeout: int = 15,
+        timeout: Optional[int] = None,
     ):
         self.base_url = (base_url or settings.ERP_BASE_URL).rstrip("/")
         self.token = token or settings.ERP_API_TOKEN
         self.username = username or settings.ERP_USERNAME
         self.password = password or settings.ERP_PASSWORD
         self.default_company_id = default_company_id or settings.DEFAULT_COMPANY_ID
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else settings.REQUEST_TIMEOUT_SEC
         self.client = httpx.Client(timeout=self.timeout)
 
     def _generate_secret_key(self) -> str:
