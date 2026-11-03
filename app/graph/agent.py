@@ -1,26 +1,28 @@
 """
 LangGraph ReAct Agent with Conversational Memory and Human-in-the-Loop (HITL) Write Protection.
 """
-import os
 from pathlib import Path
 from typing import Any, List, Optional
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage
 
-from .client import ERPClient
-from .models import get_chat_model
-from .tools_static import create_static_tools
-from .tools_dynamic import create_dynamic_tools
+from app.core.config import settings
+from app.services.erp_client import ERPClient
+from app.services.llm import get_chat_model
+from app.tools.static import create_static_tools
+from app.tools.dynamic import create_dynamic_tools
 
 
 def load_system_prompt() -> str:
     """
     Read erp_system_prompt.md from disk using pathlib.
-    Raises FileNotFoundError if file is missing (single source of truth).
+    Looks in project root prompts/ directory.
     """
-    prompt_file = Path(__file__).parent / "prompts" / "erp_system_prompt.md"
+    # app/graph/agent.py -> parents[2] is project root
+    project_root = Path(__file__).resolve().parents[2]
+    prompt_file = project_root / "prompts" / "erp_system_prompt.md"
     if not prompt_file.exists():
         raise FileNotFoundError(
             f"Required ERP system prompt file not found at: {prompt_file}. "
@@ -39,10 +41,10 @@ def create_erp_graph(
     Build and compile the LangGraph agent graph.
 
     Args:
-        client: ERPClient instance. If None, initialized from environment variables.
+        client: ERPClient instance. If None, initialized from settings.
         use_dynamic_tools: If True, fetches tools dynamically from ERP via GET /ai/tools/.
                            If False, uses static typed wrappers.
-        model_provider: LLM provider override ('openrouter', 'gemini', 'openai', 'ollama').
+        model_provider: LLM provider override ('openrouter', 'openai').
         checkpointer: LangGraph checkpointer for state persistence. Defaults to MemorySaver().
     """
     erp_client = client or ERPClient()
@@ -63,7 +65,6 @@ def create_erp_graph(
     # 4. Agent Node
     def call_model(state: MessagesState):
         messages = state["messages"]
-        # Prepend system prompt if not present
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=system_prompt_text)] + list(messages)
 
@@ -93,8 +94,7 @@ def create_erp_graph(
     memory = checkpointer if checkpointer is not None else MemorySaver()
     compiled_graph = workflow.compile(
         checkpointer=memory,
-        # Write operations can be configured with interrupt_before=["tools"] when strict HITL is enabled
-        interrupt_before=["tools"] if os.getenv("ENABLE_HITL_INTERRUPT", "false").lower() == "true" else [],
+        interrupt_before=["tools"] if settings.ENABLE_HITL_INTERRUPT else [],
     )
 
     return compiled_graph, tools

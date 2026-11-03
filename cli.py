@@ -1,23 +1,14 @@
 """
 Interactive CLI Runner for FastPrint ERP LangGraph Agent.
-Run with: python main.py
+Run with: python cli.py
 """
-import os
 import sys
 from pathlib import Path
-from dotenv import load_dotenv
-
-# Ensure current folder is in sys.path
-current_dir = Path(__file__).resolve().parent
-if str(current_dir) not in sys.path:
-    sys.path.insert(0, str(current_dir))
-
-# Load local .env file
-load_dotenv(current_dir / ".env")
-
-from client import ERPClient
-from graph import create_erp_graph
 from langchain_core.messages import HumanMessage
+
+from app.core.config import settings
+from app.services.erp_client import ERPClient
+from app.graph.agent import create_erp_graph
 
 
 def main():
@@ -25,14 +16,14 @@ def main():
     print("🤖 FastPrint ERP — LangGraph Assistant CLI")
     print("=" * 65)
 
-    provider = os.getenv("MODEL_PROVIDER", "openrouter")
+    provider = settings.MODEL_PROVIDER
     print(f"• LLM Provider : {provider.upper()}")
-    print(f"• ERP Base URL : {os.getenv('ERP_BASE_URL', 'http://127.0.0.1:8000')}")
-    print(f"• Default Co.  : ID {os.getenv('DEFAULT_COMPANY_ID', '1')}")
+    print(f"• ERP Base URL : {settings.ERP_BASE_URL}")
+    print(f"• Default Co.  : ID {settings.DEFAULT_COMPANY_ID}")
     print("• Commands     : 'exit' or 'quit' to end session.")
     print("-" * 65)
 
-    use_dynamic = os.getenv("USE_DYNAMIC_TOOLS", "false").lower() == "true"
+    use_dynamic = settings.USE_DYNAMIC_TOOLS
 
     try:
         client = ERPClient()
@@ -64,14 +55,16 @@ def main():
             print("\nThinking...", flush=True)
 
             inputs = {"messages": [HumanMessage(content=user_input)]}
+            last_msg = None
             for event in graph.stream(inputs, thread_config, stream_mode="values"):
                 last_msg = event["messages"][-1]
 
-            if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-                for tc in last_msg.tool_calls:
-                    print(f"  [Tool Invoked] {tc['name']}({tc['args']})")
+            if last_msg:
+                if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+                    for tc in last_msg.tool_calls:
+                        print(f"  [Tool Invoked] {tc['name']}({tc['args']})")
 
-            print(f"\nAssistant:\n{last_msg.content}\n")
+                print(f"\nAssistant:\n{last_msg.content}\n")
 
         except KeyboardInterrupt:
             print("\nSession interrupted.")

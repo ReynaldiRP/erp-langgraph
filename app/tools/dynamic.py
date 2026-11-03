@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import create_model, Field
 
-from .client import ERPClient
+from app.services.erp_client import ERPClient
 
 logger = logging.getLogger("tools_dynamic")
 
@@ -73,7 +73,6 @@ def create_dynamic_tools(client: ERPClient) -> List[StructuredTool]:
             def execute_fn(**kwargs) -> Any:
                 company_id = kwargs.pop("company_id", None)
                 confirm = kwargs.pop("confirm", False) if write_flag else False
-                # Filter out None values
                 clean_params = {k: v for k, v in kwargs.items() if v is not None}
                 return client.execute_tool(
                     domain=d,

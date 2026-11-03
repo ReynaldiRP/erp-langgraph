@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from .client import ERPClient
+from app.services.erp_client import ERPClient
 
 
 def create_static_tools(client: ERPClient) -> List[Any]:
