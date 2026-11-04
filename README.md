@@ -13,27 +13,37 @@ graph TD
     
     subgraph "erp-ai-orchestrator (app/)"
         API --> AppMain[app/main.py]
-        CLI --> AgentGraph[app/graph/agent.py<br/>LangGraph ReAct]
-        AppMain -.-> AgentGraph
+        CLI --> Workflow[app/graph/workflow.py<br/>Compiled StateGraph]
+        AppMain -.-> Workflow
         
-        AgentGraph --> State[app/graph/state.py<br/>AgentState & Memory]
-        AgentGraph --> Nodes[app/graph/nodes/<br/>Router & Extractor]
-        AgentGraph --> LLM[app/services/llm.py<br/>OpenRouter / OpenAI]
-        AgentGraph --> Tools[app/tools/<br/>Static & Dynamic Tools]
+        Workflow --> State[app/graph/state.py<br/>AgentState & MemorySaver]
         
-        Nodes --> Schemas
-        Tools --> Schemas[app/schemas/tools.py<br/>Pydantic Validation & Envelopes]
-        Tools --> SyncClient[app/services/erp_client.py<br/>Sync ERPClient]
-        AppMain --> AsyncClient[app/services/django_client.py<br/>Async DjangoCoreClient]
+        subgraph "Pipeline Nodes (app/graph/nodes/)"
+            Router[router.py<br/>Domain & Tool Router]
+            Extractor[extractor.py<br/>Entity & Date Extractor]
+            ToolNode[tool_node.py<br/>DjangoCoreClient Dispatcher]
+            Verifier[verifier.py<br/>Record Count & Retry Loop max 2x]
+            Synthesizer[synthesizer.py<br/>Markdown & Calculations Summary]
+        end
+        
+        Workflow --> Router
+        Router -->|accounting / inventory| Extractor
+        Router -->|general / guardrail| Synthesizer
+        Extractor --> ToolNode
+        ToolNode --> Verifier
+        Verifier -->|RETRY < 2| Extractor
+        Verifier -->|VALID / EMPTY / ERROR| Synthesizer
+        
+        Extractor --> Schemas[app/schemas/tools.py<br/>Pydantic Filters]
+        ToolNode --> AsyncClient[app/services/django_client.py<br/>Async DjangoCoreClient]
+        Synthesizer --> LLM[app/services/llm.py<br/>OpenRouter / OpenAI]
         
         Config[app/core/config.py<br/>Pydantic Settings] --> API
-        Config --> SyncClient
         Config --> AsyncClient
         Config --> LLM
     end
     
-    SyncClient -->|HTTP REST / JWT Bearer| ERP[FastPrint ERP Django<br/>Port 8000 /ai/tools/]
-    AsyncClient -->|Async HTTP / User Token & Service Key| ERP
+    AsyncClient -->|Async HTTP / User Token & Service Key| ERP[FastPrint ERP Django<br/>Port 8000 /ai/tools/]
 ```
 
 ---
@@ -63,13 +73,15 @@ erp-langgraph/
 │   └── graph/
 │       ├── __init__.py
 │       ├── state.py            # AgentState TypedDict, VerificationStatus, create_initial_state
-│       ├── agent.py            # LangGraph ReAct agent
+│       ├── workflow.py         # Full StateGraph workflow compilation & dual async/sync runners (TASK-4.6)
+│       ├── agent.py            # LangGraph ReAct agent starter
 │       └── nodes/
 │           ├── __init__.py
 │           ├── router.py       # Hybrid domain & tool router node (negative guardrails)
 │           ├── extractor.py    # Schema registry & temporal date extractor node
 │           ├── tool_node.py    # Tool execution node (calculations preservation & error capture)
-│           └── verifier.py     # Data verification node (adaptive records count, retry loop max 2x)
+│           ├── verifier.py     # Data verification node (adaptive records count, retry loop max 2x)
+│           └── synthesizer.py  # Markdown synthesis node (calculations formatting & polite error recovery)
 ├── tests/
 │   ├── test_config_llm.py      # Unit test konfigurasi & LLM client
 │   ├── test_schemas_tools.py   # Unit test schema tools & response envelope
@@ -77,7 +89,9 @@ erp-langgraph/
 │   ├── test_graph_state.py     # Unit test LangGraph AgentState & workflow cycle
 │   ├── test_router_extractor_nodes.py # Unit test Router & Extractor nodes (TASK-4.2)
 │   ├── test_tool_node.py       # Unit test Tool Node execution (TASK-4.3)
-│   └── test_verifier_node.py   # Unit test Verifier Node & retry cycle (TASK-4.4)
+│   ├── test_verifier_node.py   # Unit test Verifier Node & retry cycle (TASK-4.4)
+│   ├── test_synthesizer_node.py# Unit test Synthesizer Node formatting (TASK-4.5)
+│   └── test_workflow.py        # Unit test StateGraph pipeline compilation & E2E execution (TASK-4.6)
 ├── cli.py                      # Interactive CLI runner
 ├── prompts/
 │   └── erp_system_prompt.md    # System prompt konteks ERP
@@ -126,7 +140,7 @@ Jalankan test suite menggunakan modul standard library `unittest`:
 .venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Cakupan 104 unit test:
+Cakupan 125 unit test:
 - `tests/test_config_llm.py` (8 test): Singleton `Settings`, alias `DJANGO_INTERNAL_*`, timeout, inisialisasi model OpenRouter dan OpenAI.
 - `tests/test_schemas_tools.py` (17 test): Schema input (`AccountBalanceFilterSchema`, `JournalEntriesFilterSchema`, `StockLevelFilterSchema`, `ProductInfoFilterSchema`), format tanggal `YYYY-MM-DD`, batas pagination, generic response envelope, dan pengikatan `args_schema`.
 - `tests/test_django_client.py` (18 test): Penerusan `user_token` ke header `Authorization`, header `X-Internal-Service-Key`, mapping error HTTP 401/403/404/500, helper 4 tool ERP, dan context manager `async with`.
@@ -134,6 +148,8 @@ Cakupan 104 unit test:
 - `tests/test_router_extractor_nodes.py` (22 test): `VendorInvoiceFilterSchema`, hybrid routing domain & tool, negative customer guardrails, schema registry `TOOL_SCHEMA_REGISTRY`, resolusi tanggal relatif (`bulan ini`, `hari ini`, `kemarin`), dan chaining `router_node` -> `extractor_node`.
 - `tests/test_tool_node.py` (13 test): Preservasi data transaksi dan blok `calculations` (DoD), forwarding `user_token`, prioritas scoping `company_id`, penanganan error HTTP 401/403/500/timeout, dynamic tool dispatching, wrapper sync, dan integrasi StateGraph 3 node.
 - `tests/test_verifier_node.py` (21 test): Inspeksi adaptif `records_count` lintas respons ERP, transisi status `VALID`/`RETRY`/`EMPTY`, preservasi status `ERROR`, pembatas loop maksimal 2x (DoD), relaksasi filter bertahap (tanggal lalu nama vendor), dan conditional edge `decide_after_verification`.
+- `tests/test_synthesizer_node.py` (11 test): Pemformatan Markdown tabel transaksi tagihan vendor, blok `calculations`, saldo akun, stok inventaris, katalog produk, respons ramah status `EMPTY`/`ERROR`, penegakan guardrail pelanggan, serta appending `AIMessage`.
+- `tests/test_workflow.py` (10 test): Validasi conditional routing `decide_after_router`, eksekusi end-to-end `create_workflow_graph()`, pemulihan data pada siklus retry, batas pengulangan 2x, propagasi error HTTP, checkpointer memori multi-turn `thread_id`, dan runner sinkron `run_workflow_sync`.
 
 ---
 

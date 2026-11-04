@@ -10,6 +10,7 @@ from app.graph.nodes.verifier import (
     decide_after_verification,
     _calculate_records_count,
 )
+from app.graph.nodes.synthesizer import synthesizer_node, format_deterministic_answer
 
 __all__ = [
     "router_node",
@@ -19,5 +20,7 @@ __all__ = [
     "verifier_node",
     "decide_after_verification",
     "_calculate_records_count",
+    "synthesizer_node",
+    "format_deterministic_answer",
     "TOOL_SCHEMA_REGISTRY",
 ]
