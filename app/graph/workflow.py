@@ -27,10 +27,10 @@ def decide_after_router(state: AgentState) -> str:
     Conditional edge routing after the router node.
 
     Routing rules:
-    - If a specific ERP tool is detected or domain is 'accounting' / 'inventory':
-      Routes to 'extractor' to parse query entities and dates.
     - If domain is 'general' or no tool was matched:
       Routes directly to 'synthesizer' to provide general guidance or explain guardrails.
+    - If a specific ERP tool is detected and domain is 'accounting' / 'inventory':
+      Routes to 'extractor' to parse query entities and dates.
 
     Args:
         state: Current AgentState.
@@ -41,7 +41,11 @@ def decide_after_router(state: AgentState) -> str:
     detected_tool = state.get("detected_tool")
     detected_domain = state.get("detected_domain")
 
-    if detected_tool or detected_domain in ("accounting", "inventory"):
+    # Guardrail: general & out_of_scope domain inquiries NEVER invoke tool extraction
+    if detected_domain in ("general", "out_of_scope") or not detected_tool:
+        return "synthesizer"
+
+    if detected_tool and detected_domain in ("accounting", "inventory"):
         return "extractor"
 
     return "synthesizer"

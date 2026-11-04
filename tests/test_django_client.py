@@ -222,6 +222,33 @@ class TestStructuredErrorHandling(unittest.IsolatedAsyncioTestCase):
             await self.client.execute_tool(domain="accounting", tool_name="get_account_balance")
         self.assertIn("Network error", str(ctx.exception))
 
+    async def test_http_redirect_to_login_raises_django_auth_error(self):
+        """HTTP 302 redirect to login/temp_url raises DjangoAuthError with clear message."""
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 302
+        resp.is_redirect = True
+        resp.headers = {"location": "/?temp_url=/ai/tools/inventory/get_stock_level/"}
+        resp.text = ""
+        self.mock_client.request = AsyncMock(return_value=resp)
+
+        from app.services.django_client import DjangoAuthError
+        with self.assertRaises(DjangoAuthError) as ctx:
+            await self.client.execute_tool(domain="inventory", tool_name="get_stock_level")
+        self.assertIn("halaman login web", str(ctx.exception))
+
+    async def test_empty_response_body_raises_django_core_client_error(self):
+        """Empty HTTP 200 response body raises informative DjangoCoreClientError."""
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.is_redirect = False
+        resp.headers = {}
+        resp.text = ""
+        self.mock_client.request = AsyncMock(return_value=resp)
+
+        with self.assertRaises(DjangoCoreClientError) as ctx:
+            await self.client.execute_tool(domain="inventory", tool_name="get_stock_level")
+        self.assertIn("empty response", str(ctx.exception))
+
 
 class TestToolExecutionAndHelperMethods(unittest.IsolatedAsyncioTestCase):
     """Test suite verifying helper methods and schema parameter passing."""

@@ -213,6 +213,22 @@ class DjangoCoreClient:
             raise DjangoCoreClientError(f"Network error calling Django Core endpoint {endpoint}: {exc}")
 
         # HTTP Status Error Handling (DoD: 401, 403, 404, 500)
+        if 300 <= resp.status_code < 400:
+            resp_headers = getattr(resp, "headers", None)
+            redirect_url = resp_headers.get("location", "") if resp_headers is not None and hasattr(resp_headers, "get") else ""
+            if "temp_url=" in redirect_url or "login" in redirect_url:
+                raise DjangoAuthError(
+                    f"Django Core mengalihkan request API ke halaman login web (HTTP {resp.status_code} Redirect to '{redirect_url}'). "
+                    f"Pastikan token JWT valid dan endpoint '/ai/' diizinkan oleh middleware autentikasi ERP.",
+                    status_code=resp.status_code,
+                    details={"location": redirect_url, "text": resp.text},
+                )
+            raise DjangoCoreClientError(
+                f"Unexpected HTTP {resp.status_code} redirect from Django Core to '{redirect_url}'.",
+                status_code=resp.status_code,
+                details={"location": redirect_url, "text": resp.text},
+            )
+
         if resp.status_code == 401:
             if not user_token and retries > 0:
                 logger.warning("System JWT token expired (401). Attempting re-login...")
@@ -260,10 +276,22 @@ class DjangoCoreClient:
                 details=resp.text,
             )
 
+        raw_text = (resp.text or "").strip()
+        if not raw_text:
+            raise DjangoCoreClientError(
+                f"Django Core returned an empty response (HTTP {resp.status_code}). Endpoint: {endpoint}",
+                status_code=resp.status_code,
+            )
+
         try:
             res_data = resp.json()
         except Exception:
-            raise DjangoCoreClientError(f"Invalid JSON returned from Django Core: {resp.text}")
+            preview = raw_text[:200] + ("..." if len(raw_text) > 200 else "")
+            raise DjangoCoreClientError(
+                f"Invalid JSON returned from Django Core (HTTP {resp.status_code}): {preview}",
+                status_code=resp.status_code,
+                details=raw_text,
+            )
 
         # Standard ERP envelope validation: {"success": true, "data": ...}
         if isinstance(res_data, dict) and "success" in res_data:
@@ -301,9 +329,11 @@ class DjangoCoreClient:
         Execute tool asynchronously via POST /ai/tools/<domain>/<tool_name>/
         """
         endpoint = f"/ai/tools/{domain}/{tool_name}/"
+        cleaned_params = _clean_params(params)
         payload = {
             "company_id": company_id if company_id is not None else self.default_company_id,
-            "parameters": _clean_params(params),
+            "params": cleaned_params,
+            "parameters": cleaned_params,
         }
         if confirm:
             payload["confirm"] = True

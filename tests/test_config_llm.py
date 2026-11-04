@@ -23,7 +23,9 @@ class TestCentralizedConfig(unittest.TestCase):
     def test_canonical_import_and_defaults(self):
         """Verify canonical settings instance and default values."""
         self.assertEqual(settings.APP_NAME, "erp-ai-orchestrator")
-        self.assertEqual(settings.DEFAULT_COMPANY_ID, 1)
+        default_settings = Settings(_env_file=None)
+        self.assertEqual(default_settings.DEFAULT_COMPANY_ID, 1)
+        self.assertIsInstance(settings.DEFAULT_COMPANY_ID, int)
         self.assertEqual(settings.REQUEST_TIMEOUT_SEC, 15)
         self.assertIn(settings.MODEL_PROVIDER, ["openrouter", "openai"])
 

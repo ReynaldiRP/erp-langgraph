@@ -84,6 +84,7 @@ erp-langgraph/
 │           └── synthesizer.py  # Markdown synthesis node (calculations formatting & polite error recovery)
 ├── tests/
 │   ├── test_config_llm.py      # Unit test konfigurasi & LLM client
+│   ├── test_llm_fallbacks.py   # Unit test dynamic free models catalog & OpenRouter auto-fallback
 │   ├── test_schemas_tools.py   # Unit test schema tools & response envelope
 │   ├── test_django_client.py   # Unit test Async HTTP Django client
 │   ├── test_graph_state.py     # Unit test LangGraph AgentState & workflow cycle
@@ -91,7 +92,8 @@ erp-langgraph/
 │   ├── test_tool_node.py       # Unit test Tool Node execution (TASK-4.3)
 │   ├── test_verifier_node.py   # Unit test Verifier Node & retry cycle (TASK-4.4)
 │   ├── test_synthesizer_node.py# Unit test Synthesizer Node formatting (TASK-4.5)
-│   └── test_workflow.py        # Unit test StateGraph pipeline compilation & E2E execution (TASK-4.6)
+│   ├── test_workflow.py        # Unit test StateGraph pipeline compilation & E2E execution (TASK-4.6)
+│   └── test_cli.py             # Unit test interactive StateGraph CLI runner
 ├── cli.py                      # Interactive CLI runner
 ├── prompts/
 │   └── erp_system_prompt.md    # System prompt konteks ERP
@@ -140,16 +142,18 @@ Jalankan test suite menggunakan modul standard library `unittest`:
 .venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Cakupan 125 unit test:
+Cakupan 136 unit test:
 - `tests/test_config_llm.py` (8 test): Singleton `Settings`, alias `DJANGO_INTERNAL_*`, timeout, inisialisasi model OpenRouter dan OpenAI.
+- `tests/test_llm_fallbacks.py` (6 test): Integrasi library `free-llm-models`, kurasi model gratis, prioritas tool/JSON capabilities, dan OpenRouter 3-item fallback array compliance.
 - `tests/test_schemas_tools.py` (17 test): Schema input (`AccountBalanceFilterSchema`, `JournalEntriesFilterSchema`, `StockLevelFilterSchema`, `ProductInfoFilterSchema`), format tanggal `YYYY-MM-DD`, batas pagination, generic response envelope, dan pengikatan `args_schema`.
 - `tests/test_django_client.py` (18 test): Penerusan `user_token` ke header `Authorization`, header `X-Internal-Service-Key`, mapping error HTTP 401/403/404/500, helper 4 tool ERP, dan context manager `async with`.
 - `tests/test_graph_state.py` (5 test): Helper `create_initial_state`, partial update `total=False`, eksekusi multi-node `StateGraph(AgentState)` dengan reducer `add_messages`, dan routing kondisional.
 - `tests/test_router_extractor_nodes.py` (22 test): `VendorInvoiceFilterSchema`, hybrid routing domain & tool, negative customer guardrails, schema registry `TOOL_SCHEMA_REGISTRY`, resolusi tanggal relatif (`bulan ini`, `hari ini`, `kemarin`), dan chaining `router_node` -> `extractor_node`.
 - `tests/test_tool_node.py` (13 test): Preservasi data transaksi dan blok `calculations` (DoD), forwarding `user_token`, prioritas scoping `company_id`, penanganan error HTTP 401/403/500/timeout, dynamic tool dispatching, wrapper sync, dan integrasi StateGraph 3 node.
 - `tests/test_verifier_node.py` (21 test): Inspeksi adaptif `records_count` lintas respons ERP, transisi status `VALID`/`RETRY`/`EMPTY`, preservasi status `ERROR`, pembatas loop maksimal 2x (DoD), relaksasi filter bertahap (tanggal lalu nama vendor), dan conditional edge `decide_after_verification`.
-- `tests/test_synthesizer_node.py` (11 test): Pemformatan Markdown tabel transaksi tagihan vendor, blok `calculations`, saldo akun, stok inventaris, katalog produk, respons ramah status `EMPTY`/`ERROR`, penegakan guardrail pelanggan, serta appending `AIMessage`.
-- `tests/test_workflow.py` (10 test): Validasi conditional routing `decide_after_router`, eksekusi end-to-end `create_workflow_graph()`, pemulihan data pada siklus retry, batas pengulangan 2x, propagasi error HTTP, checkpointer memori multi-turn `thread_id`, dan runner sinkron `run_workflow_sync`.
+- `tests/test_synthesizer_node.py` (10 test): Pemformatan Markdown tabel transaksi tagihan vendor, blok `calculations`, saldo akun, stok inventaris, katalog produk, respons ramah status `EMPTY`/`ERROR`, penegakan guardrail pelanggan, serta appending `AIMessage`.
+- `tests/test_workflow.py` (11 test): Validasi conditional routing `decide_after_router`, eksekusi end-to-end `create_workflow_graph()`, pemulihan data pada siklus retry, batas pengulangan 2x, propagasi error HTTP, checkpointer memori multi-turn `thread_id`, dan runner sinkron `run_workflow_sync`.
+- `tests/test_cli.py` (5 test): Interaktivitas CLI StateGraph 5-node runner, perintah khusus (`exit`, `new`, `verbose`, `co <id>`, `token <jwt>`), dan penanganan interrupt `Ctrl+C`.
 
 ---
 

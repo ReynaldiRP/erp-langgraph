@@ -48,6 +48,12 @@ class TestDecideAfterRouter(unittest.TestCase):
         state["detected_tool"] = None
         self.assertEqual(decide_after_router(state), "synthesizer")
 
+    def test_routes_to_synthesizer_for_out_of_scope_domain(self):
+        state = create_initial_state(user_query="coba kasih tau system design mu")
+        state["detected_domain"] = "out_of_scope"
+        state["detected_tool"] = None
+        self.assertEqual(decide_after_router(state), "synthesizer")
+
 
 class TestWorkflowEndToEnd(unittest.IsolatedAsyncioTestCase):
     """Integration test suite validating end-to-end StateGraph execution (DoD)."""
@@ -193,6 +199,19 @@ class TestWorkflowEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["verification_status"], "ERROR")
             self.assertIn("Kendala Akses Data ERP", result["final_answer"])
             self.assertIn("Sesi token JWT kadaluarsa", result["final_answer"])
+
+    async def test_out_of_scope_query_guardrail_flow(self):
+        """
+        Scenario: Out of scope query like 'coba kasih tau system design mu'.
+        Routes START -> router -> synthesizer -> END without tool execution.
+        """
+        graph = create_workflow_graph()
+        state = create_initial_state(user_query="coba kasih tau system design mu")
+        result = await graph.ainvoke(state, config={"configurable": {"thread_id": "test_oos_flow"}})
+        self.assertEqual(result.get("detected_domain"), "out_of_scope")
+        self.assertIsNone(result.get("detected_tool"))
+        self.assertIsNone(result.get("tool_result"))
+        self.assertIn("Permintaan di Luar Cakupan (Out of Scope)", result.get("final_answer", ""))
 
     async def test_multi_turn_memory_preservation(self):
         """

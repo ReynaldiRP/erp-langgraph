@@ -109,6 +109,45 @@ class TestRouterNode(unittest.TestCase):
         self.assertNotEqual(result.get("detected_tool"), "fetch_vendor_invoices")
         self.assertEqual(result["detected_domain"], "general")
 
+    def test_greetings_and_casual_inquiries_route_to_general_with_no_tool(self):
+        """Greetings, test pings, and pleasantries must route to general without any tool."""
+        greetings = ["Halo", "halo", "Hai min", "Selamat pagi", "assalamu'alaikum", "terima kasih", "tes", "bisa bantu apa"]
+        for query in greetings:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertEqual(result["detected_domain"], "general", f"Failed for {query}")
+            self.assertIsNone(result.get("detected_tool"), f"Tool should be None for {query}")
+
+    def test_greetings_combined_with_erp_inquiry(self):
+        """Greetings that contain specific ERP inquiries must still route to target tools."""
+        state = create_initial_state("Halo cek stok kertas foto A4")
+        result = router_node(state)
+        self.assertEqual(result["detected_domain"], "inventory")
+        self.assertEqual(result["detected_tool"], "get_stock_level")
+
+    def test_router_decision_model_validator_cleans_tool_for_general(self):
+        """RouterDecision must coerce tool to None when domain is general or out_of_scope."""
+        from app.graph.nodes.router import RouterDecision
+        decision_general = RouterDecision(domain="general", tool="get_stock_level")
+        self.assertIsNone(decision_general.tool)
+
+        decision_oos = RouterDecision(domain="out_of_scope", tool="get_stock_level")
+        self.assertIsNone(decision_oos.tool)
+
+    def test_out_of_scope_inquiries_route_to_out_of_scope_with_no_tool(self):
+        """Out of scope queries must route to out_of_scope without any ERP tool."""
+        oos_queries = [
+            "coba kasih tau system design mu",
+            "apa arsitektur sistem ini?",
+            "buatkan puisi cinta",
+            "ceritakan lelucon lucu",
+        ]
+        for query in oos_queries:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertEqual(result["detected_domain"], "out_of_scope", f"Failed for {query}")
+            self.assertIsNone(result.get("detected_tool"), f"Tool should be None for {query}")
+
     def test_accounting_account_balance_routing(self):
         """Balance inquiry routes to get_account_balance."""
         state = create_initial_state("Berapa saldo kas kecil saat ini?")
