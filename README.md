@@ -16,16 +16,22 @@ graph TD
         CLI --> AgentGraph[app/graph/agent.py<br/>LangGraph ReAct]
         AppMain -.-> AgentGraph
         
+        AgentGraph --> State[app/graph/state.py<br/>AgentState & Memory]
         AgentGraph --> LLM[app/services/llm.py<br/>OpenRouter / OpenAI]
         AgentGraph --> Tools[app/tools/<br/>Static & Dynamic Tools]
-        Tools --> ERPClient[app/services/erp_client.py<br/>HTTPX Client]
+        
+        Tools --> Schemas[app/schemas/tools.py<br/>Pydantic Validation & Envelopes]
+        Tools --> SyncClient[app/services/erp_client.py<br/>Sync ERPClient]
+        AppMain --> AsyncClient[app/services/django_client.py<br/>Async DjangoCoreClient]
         
         Config[app/core/config.py<br/>Pydantic Settings] --> API
-        Config --> ERPClient
+        Config --> SyncClient
+        Config --> AsyncClient
         Config --> LLM
     end
     
-    ERPClient -->|HTTP REST / JWT Bearer| ERP[FastPrint ERP Django<br/>Port 8000 /ai/tools/]
+    SyncClient -->|HTTP REST / JWT Bearer| ERP[FastPrint ERP Django<br/>Port 8000 /ai/tools/]
+    AsyncClient -->|Async HTTP / User Token & Service Key| ERP
 ```
 
 ---
@@ -40,9 +46,13 @@ erp-langgraph/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   └── config.py           # Konfigurasi terpusat berbasis pydantic-settings
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   └── tools.py            # Pydantic Input Filter Schemas & Output Envelopes
 │   ├── services/
 │   │   ├── __init__.py
-│   │   ├── erp_client.py       # HTTP Client (httpx) untuk komunikasi ke ERP /ai/tools/
+│   │   ├── erp_client.py       # Sync HTTP Client (httpx.Client) ke ERP /ai/tools/
+│   │   ├── django_client.py    # Async HTTP Client (httpx.AsyncClient) ke Django Core
 │   │   └── llm.py              # LLM factory mendukung OpenRouter & OpenAI
 │   ├── tools/
 │   │   ├── __init__.py
@@ -50,7 +60,13 @@ erp-langgraph/
 │   │   └── dynamic.py          # Dynamic tool loader dari GET /ai/tools/
 │   └── graph/
 │       ├── __init__.py
+│       ├── state.py            # TypedDict AgentState, VerificationStatus, create_initial_state
 │       └── agent.py            # LangGraph ReAct StateGraph agent
+├── tests/
+│   ├── test_config_llm.py      # Unit tests konfigurasi terpusat & client LLM
+│   ├── test_schemas_tools.py   # Unit tests schema Pydantic tools & response envelopes
+│   ├── test_django_client.py   # Unit tests Async HTTP Django Core client & error handling
+│   └── test_graph_state.py     # Unit tests LangGraph AgentState & workflow cycle
 ├── cli.py                      # Interactive terminal runner untuk pengujian langsung
 ├── prompts/
 │   └── erp_system_prompt.md    # System prompt context domain ERP
@@ -73,9 +89,9 @@ erp-langgraph/
 | `APP_HOST` | string | `"0.0.0.0"` | Host binding FastAPI |
 | `APP_PORT` | integer | `8001` | Port service FastAPI (Port 8001 agar tidak bentrok dengan ERP Django di port 8000) |
 | `LOG_LEVEL` | string | `"info"` | Logging verbosity |
-| `ERP_BASE_URL` | string | `"http://127.0.0.1:8000"` | Base URL FastPrint ERP backend |
+| `ERP_BASE_URL` | string | `"http://127.0.0.1:8000"` | Base URL FastPrint ERP backend (alias: `DJANGO_INTERNAL_API_URL`) |
 | `DEFAULT_COMPANY_ID` | integer | `1` | ID perusahaan default untuk multi-company scoping |
-| `ERP_API_TOKEN` | string | `""` | Static JWT token (opsional, auto-login jika kosong) |
+| `ERP_API_TOKEN` | string | `""` | Static JWT / Service Key (alias: `DJANGO_INTERNAL_SERVICE_KEY`) |
 | `ERP_USERNAME` | string | `"admin"` | Username login ERP |
 | `ERP_PASSWORD` | string | `""` | Password login ERP |
 | `REQUEST_TIMEOUT_SEC` | integer | `15` | Timeout (detik) untuk HTTP client ERP dan request LLM (alias: `REQUEST_TIMEOUT`) |
@@ -86,6 +102,38 @@ erp-langgraph/
 | `OPENAI_MODEL` | string | `"gpt-4o-mini"` | Model target OpenAI |
 | `USE_DYNAMIC_TOOLS` | boolean | `false` | `true` untuk fetch tools dari ERP saat runtime |
 | `ENABLE_HITL_INTERRUPT` | boolean | `false` | `true` untuk jeda eksekusi tool write (Human-in-the-Loop) |
+
+---
+
+## 🧪 Automated Testing Suite
+
+Repositori dilengkapi dengan unit test otomatis berbasis Python standard library `unittest` (tanpa memerlukan dependensi luar):
+
+```powershell
+# Jalankan seluruh unit test suite
+.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+```
+
+### Cakupan Pengujian:
+1. **`tests/test_config_llm.py` (8 tests)**:
+   - Validasi singleton `Settings`, alias environment `DJANGO_INTERNAL_*`, dan fallback timeout.
+   - Validasi inisialisasi factory LLM `ChatOpenAI` untuk OpenRouter dan OpenAI.
+2. **`tests/test_schemas_tools.py` (17 tests)**:
+   - Validasi input filter schemas (`AccountBalanceFilterSchema`, `JournalEntriesFilterSchema`, `StockLevelFilterSchema`, `ProductInfoFilterSchema`).
+   - Penolakan format tanggal salah (wajib regex `YYYY-MM-DD`) dan batasan rentang pagination (`limit`).
+   - Validasi kontrak response envelope standar Django `ERPResponseEnvelope[T]` dan `ERPErrorDetail`.
+   - Verifikasi pengikatan `args_schema` pada `app/tools/static.py`.
+3. **`tests/test_django_client.py` (18 tests)**:
+   - Verifikasi penerusan token user via header `Authorization: Bearer <user_token>`.
+   - Verifikasi header `X-Internal-Service-Key` dan `X-AI-Source: LangGraph`.
+   - Pemetaan terstruktur status HTTP 401 (`DjangoAuthError`), 403 (`DjangoPermissionError`), 404 (`DjangoNotFoundError`), dan 500 (`DjangoServerError`).
+   - Eksekusi helper 4 tools riil ERP dan alias `fetch_vendor_invoices`.
+   - Verifikasi lifecycle async context manager (`async with`).
+4. **`tests/test_graph_state.py` (5 tests)**:
+   - Verifikasi inisialisasi state awal via `create_initial_state`.
+   - Verifikasi dukungan partial updates `total=False`.
+   - Verifikasi eksekusi siklus penuh `StateGraph(AgentState)` multi-node dengan reducer `add_messages`.
+   - Verifikasi routing kondisional berbasis `verification_status`.
 
 ---
 
