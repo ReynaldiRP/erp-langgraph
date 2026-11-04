@@ -10,6 +10,8 @@ from app.graph.nodes import (
     extractor_node,
     tool_node,
     tool_node_sync,
+    verifier_node,
+    decide_after_verification,
     TOOL_SCHEMA_REGISTRY,
 )
 
@@ -22,5 +24,7 @@ __all__ = [
     "extractor_node",
     "tool_node",
     "tool_node_sync",
+    "verifier_node",
+    "decide_after_verification",
     "TOOL_SCHEMA_REGISTRY",
 ]

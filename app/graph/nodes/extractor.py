@@ -149,6 +149,8 @@ def extractor_node(
 
     user_query = (user_query or "").strip()
     detected_tool = state.get("detected_tool")
+    retry_count = int(state.get("retry_count") or 0)
+    retry_instruction = state.get("retry_instruction")
     today = ref_date or date.today()
 
     # If no tool was detected by router, return empty extracted params
@@ -189,6 +191,13 @@ def extractor_node(
                 f"If the user says 'bulan ini', set date_from='{month_start}' and date_to='{month_end}'."
             )
 
+            if retry_instruction:
+                system_prompt += (
+                    f"\n\nIMPORTANT RETRY INSTRUCTION (Attempt {retry_count}):\n"
+                    f"{retry_instruction}\n"
+                    f"Adjust and relax your extracted filter parameters accordingly."
+                )
+
             structured_model = model.with_structured_output(target_schema)
             messages = [
                 SystemMessage(content=system_prompt),
@@ -203,11 +212,12 @@ def extractor_node(
             else:
                 extracted_dict = {}
 
-            # Backfill relative dates if LLM did not fill them
-            if rel_date_from and not extracted_dict.get("date_from"):
-                extracted_dict["date_from"] = rel_date_from
-            if rel_date_to and not extracted_dict.get("date_to"):
-                extracted_dict["date_to"] = rel_date_to
+            # Backfill relative dates only on initial attempt (retry_count == 0)
+            if retry_count == 0:
+                if rel_date_from and not extracted_dict.get("date_from"):
+                    extracted_dict["date_from"] = rel_date_from
+                if rel_date_to and not extracted_dict.get("date_to"):
+                    extracted_dict["date_to"] = rel_date_to
 
             return {"extracted_params": extracted_dict}
         except Exception:
@@ -216,13 +226,24 @@ def extractor_node(
     # Deterministic fallback when offline or LLM unavailable
     if detected_tool == "fetch_vendor_invoices":
         params = _fallback_extract_vendor_invoice(user_query, today)
+        if retry_count == 1:
+            # Staged relaxation attempt 1: relax date filters
+            params.pop("date_from", None)
+            params.pop("date_to", None)
+        elif retry_count >= 2:
+            # Staged relaxation attempt 2: relax both date and vendor/search filters
+            params.pop("date_from", None)
+            params.pop("date_to", None)
+            params.pop("vendor_name", None)
+            params.pop("search", None)
         return {"extracted_params": params}
 
-    # Generic fallback: at minimum resolve dates
+    # Generic fallback: at minimum resolve dates if initial attempt
     params = {}
-    if rel_date_from:
-        params["date_from"] = rel_date_from
-    if rel_date_to:
-        params["date_to"] = rel_date_to
+    if retry_count == 0:
+        if rel_date_from:
+            params["date_from"] = rel_date_from
+        if rel_date_to:
+            params["date_to"] = rel_date_to
 
     return {"extracted_params": params}

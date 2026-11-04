@@ -39,6 +39,7 @@ class AgentState(TypedDict, total=False):
     # 5. Guardrail & Verification Cycle
     verification_status: Optional[VerificationStatus] # "VALID", "EMPTY", "RETRY", "ERROR"
     retry_count: int
+    retry_instruction: Optional[str]
 
     # 6. Final Presentation & Error Reporting
     final_answer: Optional[str]
@@ -78,6 +79,7 @@ def create_initial_state(
         "tool_result": None,
         "verification_status": None,
         "retry_count": 0,
+        "retry_instruction": None,
         "final_answer": None,
         "error_message": None,
     }
