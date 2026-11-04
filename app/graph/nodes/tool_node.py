@@ -1,0 +1,116 @@
+"""
+Tool Execution Node for FastPrint ERP LangGraph Agent Workflow (TASK-4.3).
+Executes ERP tools via DjangoCoreClient using dynamic dispatching, multi-company prioritization,
+graceful error capture, and preserves transaction data and calculations block intact.
+"""
+import asyncio
+import concurrent.futures
+import logging
+from typing import Any, Dict, Optional
+
+from app.graph.state import AgentState
+from app.services.django_client import (
+    DjangoCoreClient,
+    DjangoCoreClientError,
+)
+
+logger = logging.getLogger("tool_node")
+
+
+async def tool_node(
+    state: AgentState,
+    client: Optional[DjangoCoreClient] = None,
+) -> Dict[str, Any]:
+    """
+    Asynchronous LangGraph node that executes ERP tools based on state parameters and routing.
+
+    Definition of Done:
+    - Passes user_token and company_id to Django Core.
+    - Preserves transaction data and the calculations block intact in state['tool_result'].
+    - Captures errors gracefully into state['error_message'] and sets verification_status='ERROR'.
+
+    Args:
+        state: Current AgentState containing extracted_params, user_token, company_id, etc.
+        client: Optional DjangoCoreClient instance (if None, initializes default client).
+
+    Returns:
+        Partial AgentState update dictionary with:
+            - tool_result: Complete response dictionary from ERP (or None if error)
+            - verification_status: 'VALID' on success, 'ERROR' on failure
+            - error_message: Error string if an exception occurred, else None
+    """
+    extracted_params = dict(state.get("extracted_params") or {})
+    user_token = state.get("user_token")
+    detected_tool = state.get("detected_tool") or "fetch_vendor_invoices"
+
+    # Multi-Company Scoping Priority:
+    # Query-extracted company_id takes precedence over active session state company_id
+    target_company_id = extracted_params.get("company_id") or state.get("company_id")
+
+    erp_client = client or DjangoCoreClient()
+
+    # Adapt parameters for vendor invoices: map vendor_name to search if search is unset
+    if detected_tool in ("fetch_vendor_invoices", "get_journal_entries"):
+        if "vendor_name" in extracted_params and "search" not in extracted_params:
+            extracted_params["search"] = extracted_params["vendor_name"]
+
+    # Dynamic Tool Dispatch Registry
+    dispatch_map = {
+        "fetch_vendor_invoices": erp_client.fetch_vendor_invoices,
+        "get_journal_entries": erp_client.fetch_journal_entries,
+        "get_account_balance": erp_client.fetch_account_balance,
+        "get_stock_level": erp_client.fetch_stock_level,
+        "get_product_info": erp_client.fetch_product_info,
+    }
+
+    handler = dispatch_map.get(detected_tool, erp_client.fetch_vendor_invoices)
+
+    try:
+        raw_result = await handler(
+            params=extracted_params,
+            user_token=user_token,
+            company_id=target_company_id,
+        )
+
+        # Store complete response data intact into tool_result (DoD)
+        return {
+            "tool_result": raw_result,
+            "verification_status": "VALID",
+            "error_message": None,
+        }
+
+    except DjangoCoreClientError as err:
+        logger.warning(f"DjangoCoreClientError in tool_node for tool '{detected_tool}': {err}")
+        return {
+            "tool_result": None,
+            "verification_status": "ERROR",
+            "error_message": str(err),
+        }
+    except Exception as exc:
+        logger.error(f"Unexpected error in tool_node for tool '{detected_tool}': {exc}", exc_info=True)
+        return {
+            "tool_result": None,
+            "verification_status": "ERROR",
+            "error_message": f"Unexpected execution error: {str(exc)}",
+        }
+
+
+def tool_node_sync(
+    state: AgentState,
+    client: Optional[DjangoCoreClient] = None,
+) -> Dict[str, Any]:
+    """
+    Synchronous wrapper for tool_node.
+    Enables safe execution in synchronous CLI runners, testing suites, or standard scripts.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Running inside an active event loop (e.g. async runner or Jupyter)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            return executor.submit(asyncio.run, tool_node(state, client=client)).result()
+    else:
+        return asyncio.run(tool_node(state, client=client))

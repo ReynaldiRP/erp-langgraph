@@ -67,13 +67,15 @@ erp-langgraph/
 │       └── nodes/
 │           ├── __init__.py
 │           ├── router.py       # Hybrid domain & tool router node (negative guardrails)
-│           └── extractor.py    # Schema registry & temporal date extractor node
+│           ├── extractor.py    # Schema registry & temporal date extractor node
+│           └── tool_node.py    # Tool execution node (calculations preservation & error capture)
 ├── tests/
 │   ├── test_config_llm.py      # Unit test konfigurasi & LLM client
 │   ├── test_schemas_tools.py   # Unit test schema tools & response envelope
 │   ├── test_django_client.py   # Unit test Async HTTP Django client
 │   ├── test_graph_state.py     # Unit test LangGraph AgentState & workflow cycle
-│   └── test_router_extractor_nodes.py # Unit test Router & Extractor nodes (TASK-4.2)
+│   ├── test_router_extractor_nodes.py # Unit test Router & Extractor nodes (TASK-4.2)
+│   └── test_tool_node.py       # Unit test Tool Node execution (TASK-4.3)
 ├── cli.py                      # Interactive CLI runner
 ├── prompts/
 │   └── erp_system_prompt.md    # System prompt konteks ERP
@@ -122,12 +124,13 @@ Jalankan test suite menggunakan modul standard library `unittest`:
 .venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Cakupan 70 unit test:
+Cakupan 83 unit test:
 - `tests/test_config_llm.py` (8 test): Singleton `Settings`, alias `DJANGO_INTERNAL_*`, timeout, inisialisasi model OpenRouter dan OpenAI.
 - `tests/test_schemas_tools.py` (17 test): Schema input (`AccountBalanceFilterSchema`, `JournalEntriesFilterSchema`, `StockLevelFilterSchema`, `ProductInfoFilterSchema`), format tanggal `YYYY-MM-DD`, batas pagination, generic response envelope, dan pengikatan `args_schema`.
 - `tests/test_django_client.py` (18 test): Penerusan `user_token` ke header `Authorization`, header `X-Internal-Service-Key`, mapping error HTTP 401/403/404/500, helper 4 tool ERP, dan context manager `async with`.
 - `tests/test_graph_state.py` (5 test): Helper `create_initial_state`, partial update `total=False`, eksekusi multi-node `StateGraph(AgentState)` dengan reducer `add_messages`, dan routing kondisional.
 - `tests/test_router_extractor_nodes.py` (22 test): `VendorInvoiceFilterSchema`, hybrid routing domain & tool, negative customer guardrails, schema registry `TOOL_SCHEMA_REGISTRY`, resolusi tanggal relatif (`bulan ini`, `hari ini`, `kemarin`), dan chaining `router_node` -> `extractor_node`.
+- `tests/test_tool_node.py` (13 test): Preservasi data transaksi dan blok `calculations` (DoD), forwarding `user_token`, prioritas scoping `company_id`, penanganan error HTTP 401/403/500/timeout, dynamic tool dispatching, wrapper sync, dan integrasi StateGraph 3 node.
 
 ---
 
