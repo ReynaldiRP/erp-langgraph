@@ -93,6 +93,42 @@ class ProductInfoFilterSchema(BaseModel):
     limit: int = Field(10, ge=1, le=50, description="Max results (1-50)")
 
 
+class VendorInvoiceFilterSchema(BaseModel):
+    """Input filter schema for vendor bills & invoices (TASK-4.2)."""
+    vendor_name: Optional[str] = Field(None, description="Nama lengkap atau alias vendor / supplier (e.g. 'PT Sumber Makmur')")
+    vendor_id: Optional[int] = Field(None, description="ID spesifik vendor jika tersedia")
+    date_from: Optional[str] = Field(None, description="Tanggal awal transaksi (YYYY-MM-DD)")
+    date_to: Optional[str] = Field(None, description="Tanggal akhir transaksi (YYYY-MM-DD)")
+    status: Optional[str] = Field(None, description="Status tagihan: 'draft', 'posted', 'paid', 'unpaid', dll.")
+    search: Optional[str] = Field(None, description="Pencarian bebas nomor invoice / referensi / catatan")
+    company_id: Optional[int] = Field(None, description="Company ID (scoping multi-company)")
+    limit: int = Field(50, ge=1, le=200, description="Batas jumlah record (1-200)")
+    offset: int = Field(0, ge=0, description="Pagination offset")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+    def to_journal_filter(self) -> "JournalEntriesFilterSchema":
+        """Convert to standard JournalEntriesFilterSchema payload for ERP Django Core."""
+        search_term = self.vendor_name or self.search
+        return JournalEntriesFilterSchema(
+            company_id=self.company_id,
+            status=self.status,
+            date_from=self.date_from,
+            date_to=self.date_to,
+            search=search_term,
+            limit=self.limit,
+            offset=self.offset,
+        )
+
+
 # ==============================================================================
 # 2. Output & Response Contract Schemas (Django Core ai_tools/core/response.py)
 # ==============================================================================

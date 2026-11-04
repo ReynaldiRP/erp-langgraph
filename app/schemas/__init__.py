@@ -7,6 +7,7 @@ from app.schemas.tools import (
     JournalEntriesFilterSchema,
     StockLevelFilterSchema,
     ProductInfoFilterSchema,
+    VendorInvoiceFilterSchema,
     # Envelope & Error
     ERPErrorDetail,
     ERPResponseEnvelope,
@@ -30,6 +31,7 @@ __all__ = [
     "JournalEntriesFilterSchema",
     "StockLevelFilterSchema",
     "ProductInfoFilterSchema",
+    "VendorInvoiceFilterSchema",
     "ERPErrorDetail",
     "ERPResponseEnvelope",
     "AccountBalanceDataSchema",
