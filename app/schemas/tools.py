@@ -71,7 +71,7 @@ class StockLevelFilterSchema(BaseModel):
     """Input filter schema for inventory.get_stock_level."""
     company_id: Optional[int] = Field(None, description="Company ID")
     product_id: Optional[int] = Field(None, description="Product Variant ID (either product_id or code required)")
-    code: Optional[str] = Field(None, description="Product SKU code (either product_id or code required)")
+    code: Optional[str] = Field(None, description="Product SKU code, barcode, or product variant name (either product_id or code required)")
     location_id: Optional[int] = Field(None, description="Optional inventory location ID filter")
     limit: int = Field(20, ge=1, le=100, description="Max records to return")
     offset: int = Field(0, ge=0, description="Offset for pagination")
@@ -79,7 +79,7 @@ class StockLevelFilterSchema(BaseModel):
     @model_validator(mode="after")
     def validate_identifier(self) -> "StockLevelFilterSchema":
         if self.product_id is None and not self.code:
-            raise ValueError("Either 'product_id' or 'code' (SKU) must be provided for stock check.")
+            raise ValueError("Either 'product_id' or 'code' (SKU/name) must be provided for stock check.")
         return self
 
 

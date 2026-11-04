@@ -127,6 +127,31 @@ def _fallback_extract_vendor_invoice(
     return params
 
 
+def _fallback_extract_stock_level(query: str) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for stock level inquiries when LLM is unavailable."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+
+    # Pattern: 'stok AAEO-NPKG', 'stok barang 3443', 'stok terkait AAEO-NPKG'
+    match = re.search(
+        r"(?:stok|stock|sisa|barang|produk)\s+(?:untuk\s+|terkait\s+|dari\s+|tentang\s+)?([A-Za-z0-9\-\_\.]+)",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if match:
+        token = match.group(1).strip()
+        if token.lower() not in ("ini", "itu", "barang", "produk", "semua", "ada", "tersedia"):
+            params["code"] = token
+            return params
+
+    tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{3,8})\b", cleaned)
+    if tokens:
+        params["code"] = tokens[0]
+        return params
+
+    return params
+
+
 def extractor_node(
     state: AgentState,
     llm: Optional[BaseChatModel] = None,
@@ -239,6 +264,9 @@ def extractor_node(
             params.pop("date_to", None)
             params.pop("vendor_name", None)
             params.pop("search", None)
+        return {"extracted_params": params}
+    elif detected_tool == "get_stock_level":
+        params = _fallback_extract_stock_level(user_query)
         return {"extracted_params": params}
 
     # Generic fallback: at minimum resolve dates if initial attempt

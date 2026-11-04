@@ -151,6 +151,21 @@ class TestSynthesizerFormatting(unittest.TestCase):
         self.assertIn("JWT token expired", output)
         self.assertIn("login ulang", output)
 
+    def test_format_error_product_not_found(self):
+        """PRODUCT_NOT_FOUND error provides polite product not found message instead of JWT message."""
+        state = create_initial_state(user_query="aku mau tanya terkait stok BARANG-PALSU")
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+        state["verification_status"] = "ERROR"
+        state["error_message"] = 'Not Found (404): {"success": false, "data": null, "error": {"code": "PRODUCT_NOT_FOUND", "message": "Product variant not found for given criteria.", "details": {}}}'
+        state["extracted_params"] = {"code": "BARANG-PALSU"}
+
+        output = format_deterministic_answer(state)
+        self.assertIn("Produk Tidak Ditemukan", output)
+        self.assertIn("BARANG-PALSU", output)
+        self.assertNotIn("Kendala Akses Data ERP", output)
+        self.assertNotIn("token autentikasi (JWT) masih aktif", output)
+
     def test_format_negative_guardrail_customer_inquiry(self):
         """Customer inquiry triggers guardrail message redirecting to Sales module."""
         state = create_initial_state(user_query="Cek tagihan pelanggan Budi")

@@ -40,6 +40,17 @@ def format_deterministic_answer(state: AgentState) -> str:
     # 1. Error Status Handling
     if status == "ERROR":
         msg = error_message or "Terjadi kesalahan internal pada layanan ERP."
+        if "PRODUCT_NOT_FOUND" in msg or "Product variant not found" in msg:
+            params = state.get("extracted_params") or {}
+            identifier = params.get("code") or params.get("product_id") or "yang diminta"
+            return (
+                f"### Produk Tidak Ditemukan\n\n"
+                f"Produk **{identifier}** tidak ditemukan pada master data ERP FastPrint.\n\n"
+                f"**Saran Tindakan**:\n"
+                f"- Pastikan kode SKU, barcode, atau nama produk yang dimasukkan sudah sesuai.\n"
+                f"- Periksa apakah produk tersebut aktif dan tidak dalam status diarsipkan (archive) di ERP."
+            )
+
         return (
             f"### Kendala Akses Data ERP\n\n"
             f"Permintaan Anda tidak dapat diproses karena terjadi kendala teknis:\n"
@@ -92,6 +103,10 @@ def format_deterministic_answer(state: AgentState) -> str:
             filter_hints.append(f"Periode: **{params.get('date_from', '-')} s/d {params.get('date_to', '-')}**")
         if params.get("account_code"):
             filter_hints.append(f"Kode Akun: **{params['account_code']}**")
+        if params.get("code"):
+            filter_hints.append(f"Produk / SKU: **{params['code']}**")
+        elif params.get("product_id"):
+            filter_hints.append(f"Product ID: **{params['product_id']}**")
 
         hint_str = f" ({', '.join(filter_hints)})" if filter_hints else ""
         return (
