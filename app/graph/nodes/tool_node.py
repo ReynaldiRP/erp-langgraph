@@ -8,6 +8,8 @@ import concurrent.futures
 import logging
 from typing import Any, Dict, Optional
 
+from app.core.config import settings
+from app.core.context import sanitize_erp_payload
 from app.graph.state import AgentState
 from app.services.django_client import (
     DjangoCoreClient,
@@ -95,9 +97,16 @@ async def tool_node(
             if loc_label and not raw_result.get("location_name"):
                 raw_result["location_name"] = loc_label
 
-        # Store complete response data intact into tool_result (DoD)
+        # Context Pruning: Sanitize technical Django metadata if enabled
+        final_tool_result = (
+            sanitize_erp_payload(raw_result)
+            if settings.ENABLE_PAYLOAD_SANITIZATION
+            else raw_result
+        )
+
+        # Store pruned and verified response data intact into tool_result (DoD)
         return {
-            "tool_result": raw_result,
+            "tool_result": final_tool_result,
             "verification_status": "VALID",
             "error_message": None,
         }

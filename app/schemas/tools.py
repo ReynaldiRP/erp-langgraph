@@ -3,7 +3,7 @@ Pydantic Schemas for AI Tools Layer (FastPrint ERP Native Tools).
 Provides strict input validation for LLMs and response contract validation for Django Core.
 """
 from datetime import datetime
-from typing import Any, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 T = TypeVar("T")
@@ -248,4 +248,36 @@ class StockLevelResponseSchema(ERPResponseEnvelope[StockLevelDataSchema]):
 
 
 class ProductInfoResponseSchema(ERPResponseEnvelope[ProductInfoDataSchema]):
+    pass
+
+
+# ------------------------------------------------------------------------------
+# RAG Knowledge Search Schemas
+# ------------------------------------------------------------------------------
+
+class KnowledgeSearchFilterSchema(BaseModel):
+    """Input filter schema for searching qualitative knowledge, SOPs, and policies."""
+    query: str = Field(..., description="Kata kunci atau pertanyaan penelusuran SOP, kebijakan, atau profil master")
+    category: Optional[Literal["sop", "product_spec", "policy", "vendor_terms", "general"]] = Field(
+        None, description="Kategori dokumen knowledge opsional"
+    )
+    top_k: int = Field(3, ge=1, le=10, description="Jumlah chunk paling relevan yang ingin diambil")
+    company_id: Optional[int] = Field(None, description="Company ID untuk multi-tenancy scoping")
+
+
+class KnowledgeChunkItem(BaseModel):
+    id: Optional[str] = None
+    title: str = Field(..., description="Judul dokumen atau rujukan (e.g. 'SOP Retur Barang v1.2')")
+    category: str = Field(..., description="Kategori dokumen (sop, policy, spec, dll.)")
+    content: str = Field(..., description="Teks isi dokumen chunk")
+    similarity_score: float = Field(0.0, description="Cosine similarity score (0.0 - 1.0)")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata dokumen: pasal, halaman, tanggal, dll.")
+
+
+class KnowledgeSearchDataSchema(BaseModel):
+    total_found: int = 0
+    chunks: List[KnowledgeChunkItem] = Field(default_factory=list)
+
+
+class KnowledgeSearchResponseSchema(ERPResponseEnvelope[KnowledgeSearchDataSchema]):
     pass

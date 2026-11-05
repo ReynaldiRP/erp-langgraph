@@ -25,6 +25,31 @@ def _format_rupiah(value: Any) -> str:
         return str(value)
 
 
+def _format_rag_section(
+    rag_context: Optional[List[Dict[str, Any]]],
+    rag_sources: Optional[List[str]] = None,
+) -> str:
+    """Format retrieved RAG knowledge chunks and sources into structured Markdown."""
+    if not rag_context:
+        return ""
+    lines = ["### Rujukan Pengetahuan & Dokumen SOP\n"]
+    for i, chunk in enumerate(rag_context, 1):
+        title = chunk.get("title") or chunk.get("metadata", {}).get("source") or f"Dokumen {i}"
+        content = chunk.get("content", "").strip()
+        score = chunk.get("similarity_score")
+        score_str = f" (Relevansi: {score:.0%})" if score is not None else ""
+        lines.append(f"#### {i}. {title}{score_str}")
+        lines.append(f"{content}\n")
+
+    sources = rag_sources or [c.get("title") for c in rag_context if c.get("title")]
+    if sources:
+        clean_sources = list(dict.fromkeys(sources))
+        lines.append("**Sumber Rujukan Terverifikasi**:")
+        for s in clean_sources:
+            lines.append(f"- `{s}`")
+    return "\n".join(lines)
+
+
 def format_deterministic_answer(state: AgentState) -> str:
     """
     Deterministic template formatter for ERP results when offline or LLM is unavailable.
@@ -69,9 +94,27 @@ def format_deterministic_answer(state: AgentState) -> str:
             "- **Tagihan Vendor / Pemasok** (Hutang usaha & status verifikasi faktur)\n"
             "- **Saldo Akun Buku Kas & Neraca** (Accounting Balance & Kas Kecil)\n"
             "- **Entri Jurnal Umum** (General Journal Entries)\n"
-            "- **Stok Barang & Master Produk** (Inventory & Kuantitas Gudang)\n\n"
+            "- **Stok Barang & Master Produk** (Inventory & Kuantitas Gudang)\n"
+            "- **Pengetahuan & SOP Perusahaan** (SOP Retur, Kebijakan, dan Spesifikasi Teknis)\n\n"
             "Silakan sampaikan pertanyaan spesifik Anda seputar data dan modul operasional di atas."
         )
+
+    query_mode = state.get("query_mode")
+    rag_context = state.get("rag_context")
+    rag_sources = state.get("rag_sources")
+
+    # 2.1 Pure RAG Knowledge Handling
+    if domain == "knowledge" or query_mode == "vector_rag":
+        if status == "EMPTY" or not rag_context:
+            return (
+                "### Informasi Pengetahuan Tidak Ditemukan\n\n"
+                "Dokumen SOP, kebijakan, atau spesifikasi terkait pertanyaan Anda belum terdaftar "
+                "dalam basis data pengetahuan FastPrint ERP.\n\n"
+                "**Saran Tindakan**:\n"
+                "- Pastikan kata kunci menggunakan istilah baku operasional (misal: 'SOP Retur', 'Spesifikasi Art Paper').\n"
+                "- Hubungi administrator sistem untuk mendaftarkan dokumen SOP ini ke basis data pengetahuan."
+            )
+        return _format_rag_section(rag_context, rag_sources)
 
     # 3. General Domain / Guardrail Inquiries
     if domain == "general" or not tool:
@@ -248,7 +291,22 @@ def synthesizer_node(
     """
     user_query = state.get("user_query")
     status = state.get("verification_status")
+    query_mode = state.get("query_mode")
     deterministic_answer = format_deterministic_answer(state)
+
+    # For hybrid inquiries, combine live ERP results with semantic RAG findings
+    if query_mode == "hybrid":
+        rag_context = state.get("rag_context")
+        rag_sources = state.get("rag_sources")
+        rag_section = _format_rag_section(rag_context, rag_sources)
+        if rag_section:
+            deterministic_answer = f"{deterministic_answer}\n\n---\n\n{rag_section}"
+        else:
+            deterministic_answer = (
+                f"{deterministic_answer}\n\n"
+                f"> [!NOTE]\n"
+                f"> Dokumen SOP atau spesifikasi kebijakan terkait belum terdaftar di basis data pengetahuan perusahaan."
+            )
 
     final_text = deterministic_answer
 

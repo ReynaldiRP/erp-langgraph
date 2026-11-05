@@ -17,9 +17,13 @@ from app.services.llm import get_chat_model
 
 class RouterDecision(BaseModel):
     """Structured output schema for LLM router fallback."""
-    domain: Literal["accounting", "inventory", "general", "out_of_scope"] = Field(
+    domain: Literal["accounting", "inventory", "knowledge", "general", "out_of_scope"] = Field(
         ...,
-        description="Target ERP module domain: 'accounting', 'inventory', 'general' (greetings/help), or 'out_of_scope' (unrelated/general queries outside ERP)."
+        description="Target ERP module domain: 'accounting', 'inventory', 'knowledge' (SOPs, specs, policies), 'general' (greetings/help), or 'out_of_scope' (unrelated queries outside ERP)."
+    )
+    query_mode: Literal["live_erp", "vector_rag", "hybrid", "general", "out_of_scope"] = Field(
+        "live_erp",
+        description="Execution mode: 'vector_rag' for SOP/policies/specs, 'live_erp' for real-time transactions/stock, 'hybrid' for combined questions, 'general', or 'out_of_scope'."
     )
     tool: Optional[Literal[
         "fetch_vendor_invoices",
@@ -30,7 +34,11 @@ class RouterDecision(BaseModel):
         "get_locations",
     ]] = Field(
         None,
-        description="Target tool name to invoke in ERP backend, or null if general / out_of_scope / unmapped."
+        description="Target tool name to invoke in ERP backend, or null if knowledge / general / out_of_scope."
+    )
+    rag_query: Optional[str] = Field(
+        None,
+        description="Extracted search query for RAG knowledge retrieval if query_mode is vector_rag or hybrid."
     )
     reasoning: Optional[str] = Field(
         None,
@@ -39,8 +47,8 @@ class RouterDecision(BaseModel):
 
     @model_validator(mode="after")
     def clean_tool_for_general_and_out_of_scope(self) -> "RouterDecision":
-        """Enforce null tool whenever domain is general or out_of_scope."""
-        if self.domain in ("general", "out_of_scope"):
+        """Enforce null tool whenever domain is general, out_of_scope, or knowledge."""
+        if self.domain in ("general", "out_of_scope", "knowledge") or self.query_mode == "vector_rag":
             self.tool = None
         return self
 
@@ -92,11 +100,27 @@ INVENTORY_PRODUCT_PATTERNS = [
     r"\bharga barang\b",
     r"\bharga jual\b",
     r"\bharga beli\b",
-    r"\bspesifikasi\b",
     r"\bdetail barang\b",
     r"\bsku\b",
     r"\bbarcode\b",
     r"\bvarian\b",
+]
+
+KNOWLEDGE_RAG_PATTERNS = [
+    r"\bsop\b",
+    r"\bkebijakan\b",
+    r"\bprosedur\b",
+    r"\baturan\b",
+    r"\b(per)?syarat(an)?\b",
+    r"\b(ke)?tentuan\b",
+    r"\b(di|me)?retur(kan)?(nya)?\b",
+    r"\b(ber)?garansi\b",
+    r"\bspesifikasi\b",
+    r"\b(gsm|gramasi|ketebalan)\b",
+    r"\bprofil\s+(vendor|supplier|customer|pelanggan)\b",
+    r"\btermin\s+(pembayaran|kredit)\b",
+    r"\bcara\s+(klaim|retur|pengajuan)\b",
+    r"\b(di)?klaim\b",
 ]
 
 GREETING_PATTERNS = [
@@ -128,12 +152,13 @@ def _match_any(patterns: list, text: str) -> bool:
 def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
     """
     Deterministic rule-based classifier for ERP queries.
-    Returns dictionary with detected_domain and detected_tool if a definitive match is found,
-    or None if ambiguous.
+    Returns dictionary with detected_domain, detected_tool, query_mode, and rag_query
+    if a definitive match is found, or None if ambiguous.
     """
     cleaned = query.lower().strip()
     has_customer = any(term in cleaned for term in CUSTOMER_TERMS)
     has_vendor = any(term in cleaned for term in VENDOR_TERMS)
+    is_rag = _match_any(KNOWLEDGE_RAG_PATTERNS, cleaned)
 
     # 0. Sapaan / Percakapan Kasual / Bantuan Cepat
     if _match_any(GREETING_PATTERNS, cleaned) or _match_any(GENERAL_INQUIRY_PATTERNS, cleaned):
@@ -144,11 +169,14 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
             or _match_any(INVENTORY_LOCATION_PATTERNS, cleaned)
             or _match_any(INVENTORY_PRODUCT_PATTERNS, cleaned)
             or has_vendor
+            or is_rag
         )
         if not has_erp_intent:
             return {
                 "detected_domain": "general",
                 "detected_tool": None,
+                "query_mode": "general",
+                "rag_query": None,
             }
 
     # 0.1 Fast-Path Out-of-Scope Guardrail
@@ -156,65 +184,70 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
         return {
             "detected_domain": "out_of_scope",
             "detected_tool": None,
+            "query_mode": "out_of_scope",
+            "rag_query": None,
         }
 
-    # 1. Negative Guardrail: Disambiguate Customer vs Vendor
-    if has_customer and not has_vendor:
-        # User explicitly asks about customer invoices/bills (e.g. "Cek tagihan pelanggan PT Sumber Makmur")
-        # Guardrail: NEVER trigger vendor invoice flow!
+    # 0.2 Identify potential Live ERP tool match
+    live_domain: Optional[str] = None
+    live_tool: Optional[str] = None
+
+    if has_vendor and ("tagihan" in cleaned or "faktur" in cleaned or "invoice" in cleaned or "bill" in cleaned or "hutang" in cleaned):
+        live_domain = "accounting"
+        live_tool = "fetch_vendor_invoices"
+    elif _match_any(ACCOUNTING_BALANCE_PATTERNS, cleaned):
+        live_domain = "accounting"
+        live_tool = "get_account_balance"
+    elif _match_any(ACCOUNTING_JOURNAL_PATTERNS, cleaned):
+        live_domain = "accounting"
+        live_tool = "get_journal_entries"
+    elif _match_any(INVENTORY_STOCK_PATTERNS, cleaned):
+        live_domain = "inventory"
+        live_tool = "get_stock_level"
+    elif _match_any(INVENTORY_LOCATION_PATTERNS, cleaned):
+        live_domain = "inventory"
+        live_tool = "get_locations"
+    elif _match_any(INVENTORY_PRODUCT_PATTERNS, cleaned) and not is_rag:
+        live_domain = "inventory"
+        live_tool = "get_product_info"
+    elif has_vendor and not is_rag:
+        live_domain = "accounting"
+        live_tool = "fetch_vendor_invoices"
+
+    # 1. Negative Guardrail: Customer Invoice / Billing Inquiries
+    if has_customer and not has_vendor and not is_rag:
         return {
             "detected_domain": "general",
             "detected_tool": None,
+            "query_mode": "general",
+            "rag_query": None,
         }
 
-    # 2. Vendor Invoice Check (Accounting Domain)
-    # Triggered by keywords like "tagihan vendor", "faktur supplier", "invoice vendor", etc.
-    if has_vendor and ("tagihan" in cleaned or "faktur" in cleaned or "invoice" in cleaned or "bill" in cleaned or "hutang" in cleaned):
+    # 2. Check for Hybrid (both RAG knowledge and Live tool intent)
+    if is_rag and live_tool:
         return {
-            "detected_domain": "accounting",
-            "detected_tool": "fetch_vendor_invoices",
+            "detected_domain": live_domain,
+            "detected_tool": live_tool,
+            "query_mode": "hybrid",
+            "rag_query": query,
         }
 
-    if has_vendor:
-        # General vendor lookup without explicit balance
+    # 3. Check for Pure Vector RAG (SOP, specs, policies)
+    if is_rag and not live_tool:
         return {
-            "detected_domain": "accounting",
-            "detected_tool": "fetch_vendor_invoices",
+            "detected_domain": "knowledge",
+            "detected_tool": None,
+            "query_mode": "vector_rag",
+            "rag_query": query,
         }
 
-    # 3. Account Balance Check (Accounting Domain)
-    if _match_any(ACCOUNTING_BALANCE_PATTERNS, cleaned):
+    # 4. Pure Live ERP tool match
+    if live_tool:
         return {
-            "detected_domain": "accounting",
-            "detected_tool": "get_account_balance",
-        }
-
-    # 4. Journal Entries Check (Accounting Domain)
-    if _match_any(ACCOUNTING_JOURNAL_PATTERNS, cleaned):
-        return {
-            "detected_domain": "accounting",
-            "detected_tool": "get_journal_entries",
-        }
-
-    # 5. Stock Level Check (Inventory Domain)
-    if _match_any(INVENTORY_STOCK_PATTERNS, cleaned):
-        return {
-            "detected_domain": "inventory",
-            "detected_tool": "get_stock_level",
-        }
-
-    # 6. Inventory Location / Warehouse Check (Inventory Domain)
-    if _match_any(INVENTORY_LOCATION_PATTERNS, cleaned):
-        return {
-            "detected_domain": "inventory",
-            "detected_tool": "get_locations",
-        }
-
-    # 7. Product Info Check (Inventory Domain)
-    if _match_any(INVENTORY_PRODUCT_PATTERNS, cleaned):
-        return {
-            "detected_domain": "inventory",
-            "detected_tool": "get_product_info",
+            "detected_domain": live_domain,
+            "detected_tool": live_tool,
+            "query_mode": "live_erp",
+            "rag_query": None,
         }
 
     return None
@@ -266,14 +299,15 @@ def router_node(
     if model is not None:
         try:
             system_prompt = (
-                "You are an ERP Domain and Tool Router for FastPrint ERP.\n"
-                "Classify user inquiries into target module ('accounting', 'inventory', 'general', 'out_of_scope') "
-                "and select the most appropriate tool.\n\n"
-                "CLASSIFICATION RULES:\n"
-                "1. 'accounting': Balance, cash, journal entries, or vendor bills/invoices.\n"
-                "2. 'inventory': Physical stock ('get_stock_level'), warehouse and locations list ('get_locations'), SKU, or product catalog info ('get_product_info').\n"
-                "3. 'general': Pure greetings (e.g., 'halo', 'selamat pagi') or asking about FastPrint ERP capabilities/menu.\n"
-                "4. 'out_of_scope': Inquiries unrelated to FastPrint ERP data or operational records, including system design/architecture questions (e.g., 'coba kasih tau system design mu'), personal questions, jokes, poetry, general coding, world knowledge, or general chit-chat.\n\n"
+                "You are an ERP Domain, Tool, and RAG Knowledge Router for FastPrint ERP.\n"
+                "Classify user inquiries into target module ('accounting', 'inventory', 'knowledge', 'general', 'out_of_scope') "
+                "and determine the execution query_mode ('live_erp', 'vector_rag', 'hybrid', 'general', 'out_of_scope').\n\n"
+                "ROUTING RULES:\n"
+                "1. 'vector_rag' / domain='knowledge': Pure qualitative questions about SOPs, return policies, product technical specifications (GSM, size), warranty, or vendor contract terms. tool=null.\n"
+                "2. 'live_erp': Numerical / real-time inquiries about live stock on hand, cash balances, journal ledger, or vendor bills/invoices.\n"
+                "3. 'hybrid': Combined queries asking about both rules/SOP/specs AND live numbers/stock (e.g. 'Can we return Art Paper 210 and how many are in stock?'). Set detected_tool to the live ERP tool.\n"
+                "4. 'general': Pure greetings or asking about FastPrint ERP capabilities.\n"
+                "5. 'out_of_scope': Inquiries unrelated to FastPrint ERP data or operational records.\n\n"
                 "CRITICAL GUARDRAILS:\n"
                 "- Customer / pelanggan inquiries must NOT be routed to 'fetch_vendor_invoices'. Set domain='general' and tool=null.\n"
                 "- Whenever domain is 'general' or 'out_of_scope', tool MUST be null."
@@ -284,10 +318,12 @@ def router_node(
                 HumanMessage(content=user_query),
             ]
             decision: RouterDecision = structured_model.invoke(messages)
-            detected_tool = decision.tool if decision.domain not in ("general", "out_of_scope") else None
+            detected_tool = decision.tool if decision.domain not in ("general", "out_of_scope", "knowledge") else None
             return {
                 "detected_domain": decision.domain,
                 "detected_tool": detected_tool,
+                "query_mode": decision.query_mode,
+                "rag_query": decision.rag_query or (user_query if decision.query_mode in ("vector_rag", "hybrid") else None),
             }
         except Exception:
             pass
@@ -296,4 +332,6 @@ def router_node(
     return {
         "detected_domain": "general",
         "detected_tool": None,
+        "query_mode": "general",
+        "rag_query": None,
     }

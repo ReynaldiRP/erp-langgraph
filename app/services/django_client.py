@@ -420,6 +420,24 @@ class DjangoCoreClient:
             user_token=user_token,
         )
 
+    async def fetch_knowledge(
+        self,
+        params: Any,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch semantically relevant knowledge chunks (SOPs, product specs, policies)
+        from PGVector via Django Core endpoint POST /ai/tools/knowledge/search/.
+        """
+        return await self.execute_tool(
+            domain="knowledge",
+            tool_name="search",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
     async def fetch_vendor_invoices(
         self,
         params: Any,

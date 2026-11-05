@@ -10,6 +10,7 @@ from app.core.config import settings
 
 # Structured verification status literal
 VerificationStatus = Literal["VALID", "EMPTY", "RETRY", "ERROR"]
+QueryMode = Literal["live_erp", "vector_rag", "hybrid", "general", "out_of_scope"]
 
 
 class AgentState(TypedDict, total=False):
@@ -44,6 +45,15 @@ class AgentState(TypedDict, total=False):
     # 6. Final Presentation & Error Reporting
     final_answer: Optional[str]
     error_message: Optional[str]
+
+    # 7. Context Management & Long-Term Memory
+    conversation_summary: Optional[str]
+
+    # 8. RAG Knowledge & Retrieval Context
+    query_mode: Optional[QueryMode]
+    rag_query: Optional[str]
+    rag_context: Optional[List[Dict[str, Any]]]
+    rag_sources: Optional[List[str]]
 
 
 def create_initial_state(
@@ -82,4 +92,9 @@ def create_initial_state(
         "retry_instruction": None,
         "final_answer": None,
         "error_message": None,
+        "conversation_summary": None,
+        "query_mode": "live_erp",
+        "rag_query": None,
+        "rag_context": None,
+        "rag_sources": None,
     }

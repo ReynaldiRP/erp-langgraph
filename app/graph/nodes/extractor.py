@@ -13,6 +13,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel
 
+from app.core.config import settings
+from app.core.context import trim_conversation_messages, build_contextual_prompt
 from app.graph.state import AgentState
 from app.schemas.tools import (
     AccountBalanceFilterSchema,
@@ -265,8 +267,18 @@ def extractor_node(
                     f"Adjust and relax your extracted filter parameters accordingly."
                 )
 
+            # Augment system prompt with conversation summary if available
+            system_prompt = build_contextual_prompt(
+                system_prompt,
+                state.get("conversation_summary"),
+            )
+
             structured_model = model.with_structured_output(target_schema)
-            history_msgs = [m for m in (state.get("messages") or [])[:-1] if getattr(m, "content", None)][-6:]
+            raw_history = (state.get("messages") or [])[:-1]
+            history_msgs = trim_conversation_messages(
+                raw_history,
+                max_messages=settings.MAX_WINDOW_MESSAGES,
+            )
             messages = [
                 SystemMessage(content=system_prompt),
                 *history_msgs,

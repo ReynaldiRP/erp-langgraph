@@ -9,6 +9,7 @@ from app.schemas.tools import (
     ProductInfoFilterSchema,
     VendorInvoiceFilterSchema,
     LocationsFilterSchema,
+    KnowledgeSearchFilterSchema,
     # Envelope & Error
     ERPErrorDetail,
     ERPResponseEnvelope,
@@ -20,11 +21,14 @@ from app.schemas.tools import (
     StockLevelDataSchema,
     ProductInfoDataSchema,
     ProductInfoItem,
+    KnowledgeChunkItem,
+    KnowledgeSearchDataSchema,
     # Concrete Response Schemas
     AccountBalanceResponseSchema,
     JournalEntriesResponseSchema,
     StockLevelResponseSchema,
     ProductInfoResponseSchema,
+    KnowledgeSearchResponseSchema,
 )
 
 __all__ = [
@@ -34,6 +38,7 @@ __all__ = [
     "ProductInfoFilterSchema",
     "VendorInvoiceFilterSchema",
     "LocationsFilterSchema",
+    "KnowledgeSearchFilterSchema",
     "ERPErrorDetail",
     "ERPResponseEnvelope",
     "AccountBalanceDataSchema",
@@ -43,8 +48,11 @@ __all__ = [
     "StockLevelDataSchema",
     "ProductInfoDataSchema",
     "ProductInfoItem",
+    "KnowledgeChunkItem",
+    "KnowledgeSearchDataSchema",
     "AccountBalanceResponseSchema",
     "JournalEntriesResponseSchema",
     "StockLevelResponseSchema",
     "ProductInfoResponseSchema",
+    "KnowledgeSearchResponseSchema",
 ]

@@ -52,5 +52,25 @@ class Settings(BaseSettings):
     USE_DYNAMIC_TOOLS: bool = False
     ENABLE_HITL_INTERRUPT: bool = False
 
+    # 4. Context Window & Memory Management
+    MAX_WINDOW_MESSAGES: int = Field(default=10, validation_alias="MAX_WINDOW_MESSAGES")
+    ENABLE_AUTO_SUMMARIZATION: bool = Field(default=True, validation_alias="ENABLE_AUTO_SUMMARIZATION")
+    SUMMARIZATION_THRESHOLD_MESSAGES: int = Field(default=10, validation_alias="SUMMARIZATION_THRESHOLD_MESSAGES")
+    ENABLE_PAYLOAD_SANITIZATION: bool = Field(default=True, validation_alias="ENABLE_PAYLOAD_SANITIZATION")
+
+    # 5. RAG & Knowledge Settings
+    ENABLE_RAG: bool = Field(default=True, validation_alias="ENABLE_RAG")
+    RAG_TOP_K: int = Field(default=3, validation_alias="RAG_TOP_K")
+    RAG_SIMILARITY_THRESHOLD: float = Field(default=0.65, validation_alias="RAG_SIMILARITY_THRESHOLD")
+    VECTOR_DB_URL: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("VECTOR_DB_URL", "POSTGRES_VECTOR_URL"),
+    )
+    GEMINI_API_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    )
+    GEMINI_EMBEDDING_MODEL: str = Field(default="gemini-embedding-001", validation_alias="GEMINI_EMBEDDING_MODEL")
+
 
 settings = Settings()

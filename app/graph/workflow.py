@@ -13,7 +13,9 @@ from langgraph.graph import StateGraph, START, END
 
 from app.core.config import settings
 from app.graph.state import AgentState, create_initial_state
+from app.graph.nodes.summarizer import summarizer_node
 from app.graph.nodes.router import router_node
+from app.graph.nodes.rag_node import rag_node
 from app.graph.nodes.extractor import extractor_node
 from app.graph.nodes.tool_node import tool_node
 from app.graph.nodes.verifier import verifier_node, decide_after_verification
@@ -27,6 +29,8 @@ def decide_after_router(state: AgentState) -> str:
     Conditional edge routing after the router node.
 
     Routing rules:
+    - If query_mode is 'vector_rag' or domain is 'knowledge':
+      Routes directly to 'rag_node' for semantic document retrieval.
     - If domain is 'general' or no tool was matched:
       Routes directly to 'synthesizer' to provide general guidance or explain guardrails.
     - If a specific ERP tool is detected and domain is 'accounting' / 'inventory':
@@ -36,10 +40,15 @@ def decide_after_router(state: AgentState) -> str:
         state: Current AgentState.
 
     Returns:
-        Target node identifier ('extractor' or 'synthesizer').
+        Target node identifier ('rag_node', 'extractor', or 'synthesizer').
     """
+    query_mode = state.get("query_mode")
     detected_tool = state.get("detected_tool")
     detected_domain = state.get("detected_domain")
+
+    # Vector RAG route for SOPs, specs, and qualitative knowledge
+    if query_mode == "vector_rag" or detected_domain == "knowledge":
+        return "rag_node"
 
     # Guardrail: general & out_of_scope domain inquiries NEVER invoke tool extraction
     if detected_domain in ("general", "out_of_scope") or not detected_tool:
@@ -48,6 +57,28 @@ def decide_after_router(state: AgentState) -> str:
     if detected_tool and detected_domain in ("accounting", "inventory"):
         return "extractor"
 
+    return "synthesizer"
+
+
+def decide_after_tool(state: AgentState) -> str:
+    """
+    Routing after live tool execution:
+    - Hybrid queries proceed to 'rag_node' to fetch complementary SOP / policy context.
+    - Pure live_erp queries proceed directly to 'verifier'.
+    """
+    if state.get("query_mode") == "hybrid":
+        return "rag_node"
+    return "verifier"
+
+
+def decide_after_rag(state: AgentState) -> str:
+    """
+    Routing after RAG retrieval:
+    - Hybrid queries proceed to 'verifier' to validate the tool execution data.
+    - Pure vector_rag queries proceed directly to 'synthesizer'.
+    """
+    if state.get("query_mode") == "hybrid":
+        return "verifier"
     return "synthesizer"
 
 
@@ -73,24 +104,43 @@ def create_workflow_graph(
     workflow = StateGraph(AgentState)
 
     # 1. Register Pipeline Nodes
+    workflow.add_node("summarizer", summarizer_node)
     workflow.add_node("router", router_node)
+    workflow.add_node("rag_node", rag_node)
     workflow.add_node("extractor", extractor_node)
     workflow.add_node("tool_node", tool_node)
     workflow.add_node("verifier", verifier_node)
     workflow.add_node("synthesizer", synthesizer_node)
 
     # 2. Connect Edges
-    workflow.add_edge(START, "router")
+    workflow.add_edge(START, "summarizer")
+    workflow.add_edge("summarizer", "router")
     workflow.add_conditional_edges(
         "router",
         decide_after_router,
         {
+            "rag_node": "rag_node",
             "extractor": "extractor",
             "synthesizer": "synthesizer",
         },
     )
     workflow.add_edge("extractor", "tool_node")
-    workflow.add_edge("tool_node", "verifier")
+    workflow.add_conditional_edges(
+        "tool_node",
+        decide_after_tool,
+        {
+            "rag_node": "rag_node",
+            "verifier": "verifier",
+        },
+    )
+    workflow.add_conditional_edges(
+        "rag_node",
+        decide_after_rag,
+        {
+            "verifier": "verifier",
+            "synthesizer": "synthesizer",
+        },
+    )
     workflow.add_conditional_edges(
         "verifier",
         decide_after_verification,
