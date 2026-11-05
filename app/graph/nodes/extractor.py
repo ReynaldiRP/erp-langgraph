@@ -20,6 +20,7 @@ from app.schemas.tools import (
     StockLevelFilterSchema,
     ProductInfoFilterSchema,
     VendorInvoiceFilterSchema,
+    LocationsFilterSchema,
 )
 from app.services.llm import get_chat_model
 
@@ -30,6 +31,7 @@ TOOL_SCHEMA_REGISTRY: Dict[str, Type[BaseModel]] = {
     "get_account_balance": AccountBalanceFilterSchema,
     "get_stock_level": StockLevelFilterSchema,
     "get_product_info": ProductInfoFilterSchema,
+    "get_locations": LocationsFilterSchema,
 }
 
 
@@ -127,10 +129,24 @@ def _fallback_extract_vendor_invoice(
     return params
 
 
-def _fallback_extract_stock_level(query: str) -> Dict[str, Any]:
+def _fallback_extract_stock_level(
+    query: str,
+    history: Optional[list] = None,
+) -> Dict[str, Any]:
     """Deterministic heuristic extraction for stock level inquiries when LLM is unavailable."""
     params: Dict[str, Any] = {}
     cleaned = query.strip()
+
+    # Extract location name (e.g., 'di mainstore', 'di gudang utama')
+    loc_match = re.search(
+        r"\bdi\s+(?:gudang\s+|lokasi\s+)?([A-Za-z0-9\_\-]+)",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if loc_match:
+        loc_candidate = loc_match.group(1).strip()
+        if loc_candidate.lower() not in ("mana", "sini", "situ", "kantor", "semua", "ini", "itu", "gudang", "lokasi"):
+            params["location_name"] = loc_candidate
 
     # Pattern: 'stok AAEO-NPKG', 'stok barang 3443', 'stok terkait AAEO-NPKG'
     match = re.search(
@@ -149,6 +165,27 @@ def _fallback_extract_stock_level(query: str) -> Dict[str, Any]:
         params["code"] = tokens[0]
         return params
 
+    # Coreference fallback: if user says 'produk itu', 'barang itu', check previous messages in history
+    if any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang")) and history:
+        for prev_msg in reversed(history):
+            content = getattr(prev_msg, "content", "") or ""
+            prev_tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{3,8})\b", content)
+            if prev_tokens:
+                params["code"] = prev_tokens[0]
+                break
+
+    return params
+
+
+def _fallback_extract_locations(query: str) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for inventory location inquiries."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+    match = re.search(r"(?:gudang|lokasi|warehouse)\s+([A-Za-z0-9\_\-]+)", cleaned, re.IGNORECASE)
+    if match:
+        token = match.group(1).strip()
+        if token.lower() not in ("apa", "saja", "semua", "yang", "ada", "aktif", "ini", "itu", "daftar", "list"):
+            params["search"] = token
     return params
 
 
@@ -216,7 +253,9 @@ def extractor_node(
                 f"Reference Today's Date: {today.strftime('%Y-%m-%d')}\n"
                 f"Current Month Range: {month_start} to {month_end}\n\n"
                 f"Extract filter entities strictly adhering to the schema.\n"
-                f"If the user says 'bulan ini', set date_from='{month_start}' and date_to='{month_end}'."
+                f"If the user says 'bulan ini', set date_from='{month_start}' and date_to='{month_end}'.\n"
+                f"If the user refers to entities from previous turns (e.g. 'produk itu', 'barang tadi', 'vendor tersebut', 'itu'), "
+                f"resolve the specific SKU, code, or entity name from the conversation history."
             )
 
             if retry_instruction:
@@ -227,8 +266,10 @@ def extractor_node(
                 )
 
             structured_model = model.with_structured_output(target_schema)
+            history_msgs = [m for m in (state.get("messages") or [])[:-1] if getattr(m, "content", None)][-6:]
             messages = [
                 SystemMessage(content=system_prompt),
+                *history_msgs,
                 HumanMessage(content=user_query),
             ]
             extracted_obj = structured_model.invoke(messages)
@@ -266,7 +307,10 @@ def extractor_node(
             params.pop("search", None)
         return {"extracted_params": params}
     elif detected_tool == "get_stock_level":
-        params = _fallback_extract_stock_level(user_query)
+        params = _fallback_extract_stock_level(user_query, state.get("messages"))
+        return {"extracted_params": params}
+    elif detected_tool == "get_locations":
+        params = _fallback_extract_locations(user_query)
         return {"extracted_params": params}
 
     # Generic fallback: at minimum resolve dates if initial attempt

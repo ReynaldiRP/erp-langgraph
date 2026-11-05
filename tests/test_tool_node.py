@@ -261,6 +261,55 @@ class TestDynamicToolDispatching(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["verification_status"], "VALID")
         self.assertEqual(len(result["tool_result"]["products"]), 1)
 
+    async def test_dispatch_to_get_locations(self):
+        """Routes to fetch_locations when detected_tool is get_locations."""
+        mock_client = MagicMock(spec=DjangoCoreClient)
+        mock_client.fetch_locations = AsyncMock(return_value={"total_found": 1, "locations": [{"id": 2, "name": "Main Store"}]})
+
+        state = create_initial_state("Daftar gudang")
+        state["detected_tool"] = "get_locations"
+        state["extracted_params"] = {"search": "main"}
+
+        result = await tool_node(state, client=mock_client)
+
+        mock_client.fetch_locations.assert_called_once()
+        self.assertEqual(result["verification_status"], "VALID")
+        self.assertEqual(result["tool_result"]["total_found"], 1)
+
+    async def test_sequential_location_resolution_before_stock_level(self):
+        """Sequential 2-step execution: resolves location_id via fetch_locations before fetch_stock_level."""
+        mock_client = MagicMock(spec=DjangoCoreClient)
+        # Step 1: fetch_locations resolves 'mainstore' to id 2
+        mock_client.fetch_locations = AsyncMock(
+            return_value={"locations": [{"id": 2, "name": "Main Store"}]}
+        )
+        # Step 2: fetch_stock_level executed with location_id 2
+        mock_client.fetch_stock_level = AsyncMock(
+            return_value={"product_id": 10, "code": "AAEO-NPKG", "qty_on_hand": 1.05, "company_id": 3}
+        )
+
+        state = create_initial_state("kalau produk itu di mainstore berapa stoknya")
+        state["company_id"] = 3
+        state["detected_tool"] = "get_stock_level"
+        state["extracted_params"] = {"code": "AAEO-NPKG", "location_name": "mainstore"}
+
+        result = await tool_node(state, client=mock_client)
+
+        # Assert Step 1 ran
+        mock_client.fetch_locations.assert_called_once()
+        loc_call_kwargs = mock_client.fetch_locations.call_args[1]
+        self.assertEqual(loc_call_kwargs["params"]["search"], "mainstore")
+
+        # Assert Step 2 ran with resolved location_id
+        mock_client.fetch_stock_level.assert_called_once()
+        stock_call_kwargs = mock_client.fetch_stock_level.call_args[1]
+        self.assertEqual(stock_call_kwargs["params"]["location_id"], 2)
+        self.assertEqual(stock_call_kwargs["params"]["code"], "AAEO-NPKG")
+
+        # Result checks
+        self.assertEqual(result["verification_status"], "VALID")
+        self.assertEqual(result["tool_result"]["location_name"], "Main Store")
+
 
 class TestSynchronousWrapperAndPipelineChain(unittest.TestCase):
     """Test suite for tool_node_sync and full LangGraph multi-node pipeline."""

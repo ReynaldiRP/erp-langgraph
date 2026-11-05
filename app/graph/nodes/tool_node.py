@@ -61,7 +61,24 @@ async def tool_node(
         "get_account_balance": erp_client.fetch_account_balance,
         "get_stock_level": erp_client.fetch_stock_level,
         "get_product_info": erp_client.fetch_product_info,
+        "get_locations": erp_client.fetch_locations,
     }
+
+    # Sequential 2-Step Execution: If checking stock level with location_name, resolve location_id first!
+    if detected_tool == "get_stock_level" and extracted_params.get("location_name") and not extracted_params.get("location_id"):
+        try:
+            loc_res = await erp_client.fetch_locations(
+                params={"search": extracted_params["location_name"]},
+                user_token=user_token,
+                company_id=target_company_id,
+            )
+            locations = loc_res.get("locations", []) if isinstance(loc_res, dict) else (loc_res if isinstance(loc_res, list) else [])
+            if locations:
+                matched_loc = locations[0]
+                extracted_params["location_id"] = matched_loc.get("id")
+                extracted_params["matched_location_name"] = matched_loc.get("name")
+        except Exception as loc_err:
+            logger.warning(f"Could not resolve location_name '{extracted_params.get('location_name')}': {loc_err}")
 
     handler = dispatch_map.get(detected_tool, erp_client.fetch_vendor_invoices)
 
@@ -71,6 +88,12 @@ async def tool_node(
             user_token=user_token,
             company_id=target_company_id,
         )
+
+        # Attach resolved location_name to raw_result if applicable
+        if isinstance(raw_result, dict):
+            loc_label = extracted_params.get("matched_location_name") or extracted_params.get("location_name")
+            if loc_label and not raw_result.get("location_name"):
+                raw_result["location_name"] = loc_label
 
         # Store complete response data intact into tool_result (DoD)
         return {

@@ -27,6 +27,7 @@ class RouterDecision(BaseModel):
         "get_journal_entries",
         "get_stock_level",
         "get_product_info",
+        "get_locations",
     ]] = Field(
         None,
         description="Target tool name to invoke in ERP backend, or null if general / out_of_scope / unmapped."
@@ -49,7 +50,7 @@ CUSTOMER_TERMS = {"pelanggan", "customer", "piutang", "penjualan", "sales", "buy
 VENDOR_TERMS = {"vendor", "supplier", "pemasok", "hutang", "pembelian", "beli"}
 
 ACCOUNTING_BALANCE_PATTERNS = [
-    r"\bsaldo\b",
+    r"\bsaldo(nya)?\b",
     r"\bbalance\b",
     r"\bkas\b",
     r"\bkas kecil\b",
@@ -59,7 +60,7 @@ ACCOUNTING_BALANCE_PATTERNS = [
 ]
 
 ACCOUNTING_JOURNAL_PATTERNS = [
-    r"\bjurnal\b",
+    r"\bjurnal(nya)?\b",
     r"\bjournal\b",
     r"\bbuku besar\b",
     r"\bledger\b",
@@ -68,18 +69,25 @@ ACCOUNTING_JOURNAL_PATTERNS = [
 ]
 
 INVENTORY_STOCK_PATTERNS = [
-    r"\bstok\b",
-    r"\bstock\b",
-    r"\bsisa barang\b",
-    r"\bsisa stok\b",
-    r"\bgudang\b",
-    r"\bkuantitas\b",
+    r"\bstok(nya)?\b",
+    r"\bstock(nya)?\b",
+    r"\bsisa barang(nya)?\b",
+    r"\bsisa stok(nya)?\b",
+    r"\bkuantitas(nya)?\b",
     r"\bqty\b",
     r"\bon hand\b",
 ]
 
+INVENTORY_LOCATION_PATTERNS = [
+    r"\b(daftar|list|semua|info|data)\s+(gudang|lokasi|warehouse)\b",
+    r"\b(daftar|list)\s+(gudang|lokasi|warehouse)\b",
+    r"\bada\s+(gudang|lokasi|warehouse)\b",
+    r"\b(gudang|lokasi|warehouse)\s+(apa\s+saja|tersedia|aktif)\b",
+    r"^(gudang|lokasi|warehouse)\b",
+]
+
 INVENTORY_PRODUCT_PATTERNS = [
-    r"\bproduk\b",
+    r"\bproduk(nya)?\b",
     r"\bproduct\b",
     r"\bharga barang\b",
     r"\bharga jual\b",
@@ -133,6 +141,7 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
             _match_any(ACCOUNTING_BALANCE_PATTERNS, cleaned)
             or _match_any(ACCOUNTING_JOURNAL_PATTERNS, cleaned)
             or _match_any(INVENTORY_STOCK_PATTERNS, cleaned)
+            or _match_any(INVENTORY_LOCATION_PATTERNS, cleaned)
             or _match_any(INVENTORY_PRODUCT_PATTERNS, cleaned)
             or has_vendor
         )
@@ -194,7 +203,14 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
             "detected_tool": "get_stock_level",
         }
 
-    # 6. Product Info Check (Inventory Domain)
+    # 6. Inventory Location / Warehouse Check (Inventory Domain)
+    if _match_any(INVENTORY_LOCATION_PATTERNS, cleaned):
+        return {
+            "detected_domain": "inventory",
+            "detected_tool": "get_locations",
+        }
+
+    # 7. Product Info Check (Inventory Domain)
     if _match_any(INVENTORY_PRODUCT_PATTERNS, cleaned):
         return {
             "detected_domain": "inventory",
@@ -255,7 +271,7 @@ def router_node(
                 "and select the most appropriate tool.\n\n"
                 "CLASSIFICATION RULES:\n"
                 "1. 'accounting': Balance, cash, journal entries, or vendor bills/invoices.\n"
-                "2. 'inventory': Physical stock, warehouse quantity, SKU, or product catalog info.\n"
+                "2. 'inventory': Physical stock ('get_stock_level'), warehouse and locations list ('get_locations'), SKU, or product catalog info ('get_product_info').\n"
                 "3. 'general': Pure greetings (e.g., 'halo', 'selamat pagi') or asking about FastPrint ERP capabilities/menu.\n"
                 "4. 'out_of_scope': Inquiries unrelated to FastPrint ERP data or operational records, including system design/architecture questions (e.g., 'coba kasih tau system design mu'), personal questions, jokes, poetry, general coding, world knowledge, or general chit-chat.\n\n"
                 "CRITICAL GUARDRAILS:\n"

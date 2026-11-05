@@ -48,6 +48,26 @@ graph TD
 
 ---
 
+## Modul & Tool Native FastPrint ERP
+
+Service ini berinteraksi dengan layer `/ai/tools/` pada Django Core FastPrint ERP:
+
+| Domain | Tool Name | Deskripsi & Kemampuan |
+|---|---|---|
+| **Accounting** | `fetch_vendor_invoices` | Menelusuri faktur tagihan vendor/pemasok, total tagihan, dan status pembayaran. |
+| **Accounting** | `get_account_balance` | Mengecek saldo Chart of Accounts (COA), buku kas, dan neraca keuangan. |
+| **Accounting** | `get_journal_entries` | Mengambil catatan transaksi entri jurnal umum dengan filter tanggal dan nomor dokumen. |
+| **Inventory** | `get_stock_level` | Mengambil kuantitas on-hand stok barang per perusahaan, mendukung **Sequential 2-Step Location Resolution** (*nama gudang teks -> ID lokasi*). |
+| **Inventory** | `get_product_info` | Mengambil master katalog barang (SKU, barcode, harga jual, dan status varian). |
+| **Inventory** | `get_locations` | Menampilkan daftar master lokasi penyimpanan dan gudang (*warehouses*) yang aktif. |
+
+### Sequential 2-Step Location Resolution
+Ketika pengguna menanyakan stok pada gudang tertentu menggunakan nama teks (contoh: *"kalau produk itu di mainstore berapa stoknya"*):
+1. **Step 1**: `tool_node` secara otomatis memanggil `inventory.get_locations(search="mainstore")` untuk menyelesaikan ID lokasi secara dinamis dari database ERP.
+2. **Step 2**: `tool_node` mengeksekusi `inventory.get_stock_level(code="...", location_id=...)` menggunakan ID lokasi yang ditemukan, sehingga kuantitas fisik yang ditampilkan akurat untuk gudang tersebut.
+
+---
+
 ## Struktur Berkas
 
 ```text
@@ -68,7 +88,7 @@ erp-langgraph/
 │   │   └── llm.py              # LLM factory (OpenRouter & OpenAI)
 │   ├── tools/
 │   │   ├── __init__.py
-│   │   ├── static.py           # 4 tool typed (Accounting & Inventory)
+│   │   ├── static.py           # Typed tools schema (Accounting & Inventory)
 │   │   └── dynamic.py          # Dynamic tool loader dari GET /ai/tools/
 │   └── graph/
 │       ├── __init__.py
@@ -77,9 +97,9 @@ erp-langgraph/
 │       ├── agent.py            # LangGraph ReAct agent starter
 │       └── nodes/
 │           ├── __init__.py
-│           ├── router.py       # Hybrid domain & tool router node (negative guardrails)
-│           ├── extractor.py    # Schema registry & temporal date extractor node
-│           ├── tool_node.py    # Tool execution node (calculations preservation & error capture)
+│           ├── router.py       # Hybrid domain & tool router node (negative guardrails & Indonesian suffixes)
+│           ├── extractor.py    # Schema registry, multi-turn history coreference, & temporal date extractor
+│           ├── tool_node.py    # Tool execution node (calculations preservation, error capture, & sequential 2-step lookup)
 │           ├── verifier.py     # Data verification node (adaptive records count, retry loop max 2x)
 │           └── synthesizer.py  # Markdown synthesis node (calculations formatting & polite error recovery)
 ├── tests/
@@ -142,17 +162,17 @@ Jalankan test suite menggunakan modul standard library `unittest`:
 .venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Cakupan 136 unit test:
+Cakupan 152 unit test:
 - `tests/test_config_llm.py` (8 test): Singleton `Settings`, alias `DJANGO_INTERNAL_*`, timeout, inisialisasi model OpenRouter dan OpenAI.
 - `tests/test_llm_fallbacks.py` (6 test): Integrasi library `free-llm-models`, kurasi model gratis, prioritas tool/JSON capabilities, dan OpenRouter 3-item fallback array compliance.
-- `tests/test_schemas_tools.py` (17 test): Schema input (`AccountBalanceFilterSchema`, `JournalEntriesFilterSchema`, `StockLevelFilterSchema`, `ProductInfoFilterSchema`), format tanggal `YYYY-MM-DD`, batas pagination, generic response envelope, dan pengikatan `args_schema`.
-- `tests/test_django_client.py` (18 test): Penerusan `user_token` ke header `Authorization`, header `X-Internal-Service-Key`, mapping error HTTP 401/403/404/500, helper 4 tool ERP, dan context manager `async with`.
+- `tests/test_schemas_tools.py` (17 test): Schema input (`AccountBalanceFilterSchema`, `JournalEntriesFilterSchema`, `StockLevelFilterSchema`, `ProductInfoFilterSchema`, `LocationsFilterSchema`), format tanggal `YYYY-MM-DD`, batas pagination, generic response envelope, dan pengikatan `args_schema`.
+- `tests/test_django_client.py` (20 test): Penerusan `user_token` ke header `Authorization`, header `X-Internal-Service-Key`, mapping error HTTP 401/403/404/500, helper tools ERP (`fetch_locations`), dan context manager `async with`.
 - `tests/test_graph_state.py` (5 test): Helper `create_initial_state`, partial update `total=False`, eksekusi multi-node `StateGraph(AgentState)` dengan reducer `add_messages`, dan routing kondisional.
-- `tests/test_router_extractor_nodes.py` (22 test): `VendorInvoiceFilterSchema`, hybrid routing domain & tool, negative customer guardrails, schema registry `TOOL_SCHEMA_REGISTRY`, resolusi tanggal relatif (`bulan ini`, `hari ini`, `kemarin`), dan chaining `router_node` -> `extractor_node`.
-- `tests/test_tool_node.py` (13 test): Preservasi data transaksi dan blok `calculations` (DoD), forwarding `user_token`, prioritas scoping `company_id`, penanganan error HTTP 401/403/500/timeout, dynamic tool dispatching, wrapper sync, dan integrasi StateGraph 3 node.
+- `tests/test_router_extractor_nodes.py` (30 test): `VendorInvoiceFilterSchema`, hybrid routing domain & tool, negative customer guardrails, infleksi sufiks Bahasa Indonesia (`stoknya`, `saldonya`), query lokasi/gudang (`get_locations`), schema registry `TOOL_SCHEMA_REGISTRY`, resolusi tanggal relatif, multi-turn conversation history coreference, dan chaining `router_node` -> `extractor_node`.
+- `tests/test_tool_node.py` (15 test): Preservasi data transaksi dan blok `calculations` (DoD), forwarding `user_token`, prioritas scoping `company_id`, penanganan error HTTP 401/403/500/timeout, dynamic tool dispatching (`get_locations`), Sequential 2-Step Location Resolution, wrapper sync, dan integrasi StateGraph 3 node.
 - `tests/test_verifier_node.py` (21 test): Inspeksi adaptif `records_count` lintas respons ERP, transisi status `VALID`/`RETRY`/`EMPTY`, preservasi status `ERROR`, pembatas loop maksimal 2x (DoD), relaksasi filter bertahap (tanggal lalu nama vendor), dan conditional edge `decide_after_verification`.
-- `tests/test_synthesizer_node.py` (10 test): Pemformatan Markdown tabel transaksi tagihan vendor, blok `calculations`, saldo akun, stok inventaris, katalog produk, respons ramah status `EMPTY`/`ERROR`, penegakan guardrail pelanggan, serta appending `AIMessage`.
-- `tests/test_workflow.py` (11 test): Validasi conditional routing `decide_after_router`, eksekusi end-to-end `create_workflow_graph()`, pemulihan data pada siklus retry, batas pengulangan 2x, propagasi error HTTP, checkpointer memori multi-turn `thread_id`, dan runner sinkron `run_workflow_sync`.
+- `tests/test_synthesizer_node.py` (11 test): Pemformatan Markdown tabel transaksi tagihan vendor, blok `calculations`, saldo akun, stok inventaris dengan lokasi, tabel katalog produk, tabel daftar lokasi/gudang, respons ramah status `EMPTY`/`ERROR`, penegakan guardrail pelanggan, serta appending `AIMessage`.
+- `tests/test_workflow.py` (14 test): Validasi conditional routing `decide_after_router`, eksekusi end-to-end `create_workflow_graph()`, pemulihan data pada siklus retry, batas pengulangan 2x, propagasi error HTTP, checkpointer memori multi-turn `thread_id`, end-to-end 2-step location resolution flow, dan runner sinkron `run_workflow_sync`.
 - `tests/test_cli.py` (5 test): Interaktivitas CLI StateGraph 5-node runner, perintah khusus (`exit`, `new`, `verbose`, `co <id>`, `token <jwt>`), dan penanganan interrupt `Ctrl+C`.
 
 ---

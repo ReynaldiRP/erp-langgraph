@@ -15,6 +15,7 @@ from app.schemas.tools import (
     JournalEntriesFilterSchema,
     StockLevelFilterSchema,
     ProductInfoFilterSchema,
+    LocationsFilterSchema,
 )
 
 logger = logging.getLogger("django_client")
@@ -399,6 +400,21 @@ class DjangoCoreClient:
         return await self.execute_tool(
             domain="inventory",
             tool_name="get_product_info",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_locations(
+        self,
+        params: Optional[Union[LocationsFilterSchema, Dict[str, Any]]] = None,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call inventory.get_locations tool."""
+        return await self.execute_tool(
+            domain="inventory",
+            tool_name="get_locations",
             params=_clean_params(params),
             company_id=company_id,
             user_token=user_token,

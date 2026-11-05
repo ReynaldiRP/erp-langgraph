@@ -182,14 +182,15 @@ def format_deterministic_answer(state: AgentState) -> str:
         else:
             items = [tool_result]
 
-        lines.append("| SKU / Kode | Nama Produk | Perusahaan | Qty Fisik |")
-        lines.append("|:---|:---|:---|:---|")
+        lines.append("| SKU / Kode | Nama Produk | Perusahaan | Lokasi / Gudang | Qty Fisik |")
+        lines.append("|:---|:---|:---|:---|:---|")
         for st_item in items:
             code = st_item.get("code") or st_item.get("sku") or "-"
             name = st_item.get("name") or st_item.get("product_name") or "-"
             comp = st_item.get("company_name") or f"Company #{st_item.get('company_id', 1)}"
+            loc = st_item.get("location_name") or (f"Location #{st_item.get('location_id')}" if st_item.get("location_id") else "Semua Lokasi")
             qty = st_item.get("qty_on_hand") or st_item.get("quantity") or 0.0
-            lines.append(f"| `{code}` | {name} | {comp} | **{qty} unit** |")
+            lines.append(f"| `{code}` | {name} | {comp} | {loc} | **{qty} unit** |")
         return "\n".join(lines)
 
     # 4.4 Product Info
@@ -204,6 +205,25 @@ def format_deterministic_answer(state: AgentState) -> str:
                 lines.append(f"  - Kode / SKU: `{p.get('code') or p.get('sku', '-')}`")
                 if "price" in p or "sales_price" in p:
                     lines.append(f"  - Harga Jual: {_format_rupiah(p.get('price') or p.get('sales_price', 0.0))}")
+        return "\n".join(lines)
+
+    # 4.5 Locations
+    if tool == "get_locations":
+        locs = tool_result.get("locations") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_found = tool_result.get("total_found", len(locs)) if isinstance(tool_result, dict) else len(locs)
+        lines.append(f"### Informasi Daftar Lokasi & Gudang ({total_found} Lokasi Ditemukan)\n")
+        if locs:
+            lines.append("| ID | Nama Lokasi | Gudang Induk | Tipe | Kategori |")
+            lines.append("|:---|:---|:---|:---|:---|")
+            for l in locs:
+                lid = l.get("id", "-")
+                lname = l.get("name", "-")
+                wh = l.get("warehouse_name") or "-"
+                ltype = (l.get("type") or "-").capitalize()
+                lcat = (l.get("category") or "-").capitalize()
+                lines.append(f"| `{lid}` | {lname} | {wh} | {ltype} | {lcat} |")
         return "\n".join(lines)
 
     # Default fallback

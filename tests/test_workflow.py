@@ -231,6 +231,50 @@ class TestWorkflowEndToEnd(unittest.IsolatedAsyncioTestCase):
         # Should now have 4 messages in history
         self.assertEqual(len(res_2["messages"]), 4)
 
+    async def test_sequential_stock_level_with_location_resolution_flow(self):
+        """
+        Scenario 7: Full 2-step flow for stock query with location:
+        Router matches get_stock_level -> Extractor extracts code and location_name ->
+        Tool node pre-resolves location_id via fetch_locations -> executes fetch_stock_level.
+        """
+        mock_client = MagicMock(spec=DjangoCoreClient)
+        mock_client.fetch_locations = AsyncMock(
+            return_value={"locations": [{"id": 2, "name": "Main Store", "warehouse_name": "Gudang Pusat"}]}
+        )
+        mock_client.fetch_stock_level = AsyncMock(
+            return_value={
+                "product_id": 3443,
+                "code": "AAEO-NPKG",
+                "name": "AAEO-NPKG",
+                "company_id": 3,
+                "location_id": 2,
+                "qty_on_hand": 1.05,
+            }
+        )
+
+        with patch("app.graph.nodes.tool_node.DjangoCoreClient", return_value=mock_client):
+            graph = create_workflow_graph()
+            state = create_initial_state(
+                user_query="kalau produk itu di mainstore berapa stoknya",
+                company_id=3,
+                messages=[
+                    HumanMessage(content="saya mau tanya stok barang AAEO-NPKG"),
+                    AIMessage(content="Stok AAEO-NPKG SKU 3443 adalah 1.05 unit"),
+                    HumanMessage(content="kalau produk itu di mainstore berapa stoknya"),
+                ],
+            )
+            config = {"configurable": {"thread_id": "test_seq_stock_flow"}}
+
+            result = await graph.ainvoke(state, config=config)
+
+            self.assertEqual(result["detected_domain"], "inventory")
+            self.assertEqual(result["detected_tool"], "get_stock_level")
+            self.assertEqual(result["verification_status"], "VALID")
+            mock_client.fetch_locations.assert_called_once()
+            mock_client.fetch_stock_level.assert_called_once()
+            self.assertIn("Main Store", result["final_answer"])
+            self.assertIn("1.05 unit", result["final_answer"])
+
 
 class TestSynchronousRunnerHelper(unittest.TestCase):
     """Test suite validating run_workflow_sync and arun_workflow wrappers."""

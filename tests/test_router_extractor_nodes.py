@@ -23,6 +23,7 @@ from app.schemas.tools import (
     AccountBalanceFilterSchema,
     StockLevelFilterSchema,
     ProductInfoFilterSchema,
+    LocationsFilterSchema,
 )
 
 
@@ -172,6 +173,25 @@ class TestRouterNode(unittest.TestCase):
         self.assertEqual(result["detected_domain"], "inventory")
         self.assertEqual(result["detected_tool"], "get_stock_level")
 
+    def test_inventory_stock_level_with_suffix(self):
+        """Query with Indonesian suffix 'stoknya' routes correctly to get_stock_level."""
+        state = create_initial_state("kalau produk itu di mainstore berapa stoknya")
+        result = router_node(state)
+
+        self.assertEqual(result["detected_domain"], "inventory")
+        self.assertEqual(result["detected_tool"], "get_stock_level")
+
+    def test_inventory_locations_routing(self):
+        """Locations/warehouse inquiries route to get_locations."""
+        state1 = create_initial_state("Daftar gudang yang ada")
+        self.assertEqual(router_node(state1)["detected_tool"], "get_locations")
+
+        state2 = create_initial_state("Ada gudang apa saja di perusahaan ini?")
+        self.assertEqual(router_node(state2)["detected_tool"], "get_locations")
+
+        state3 = create_initial_state("list lokasi penyimpanan")
+        self.assertEqual(router_node(state3)["detected_tool"], "get_locations")
+
     def test_inventory_product_info_routing(self):
         """Product query routes to get_product_info."""
         state = create_initial_state("Berapa harga jual dan barcode produk Tinta Sublim?")
@@ -214,18 +234,20 @@ class TestExtractorNode(unittest.TestCase):
         self.anchor_date = date(2026, 11, 4)
 
     def test_tool_schema_registry_coverage(self):
-        """TOOL_SCHEMA_REGISTRY must register all 5 core tools."""
+        """TOOL_SCHEMA_REGISTRY must register all 6 core tools."""
         self.assertIn("fetch_vendor_invoices", TOOL_SCHEMA_REGISTRY)
         self.assertIn("get_journal_entries", TOOL_SCHEMA_REGISTRY)
         self.assertIn("get_account_balance", TOOL_SCHEMA_REGISTRY)
         self.assertIn("get_stock_level", TOOL_SCHEMA_REGISTRY)
         self.assertIn("get_product_info", TOOL_SCHEMA_REGISTRY)
+        self.assertIn("get_locations", TOOL_SCHEMA_REGISTRY)
 
         self.assertEqual(TOOL_SCHEMA_REGISTRY["fetch_vendor_invoices"], VendorInvoiceFilterSchema)
         self.assertEqual(TOOL_SCHEMA_REGISTRY["get_journal_entries"], JournalEntriesFilterSchema)
         self.assertEqual(TOOL_SCHEMA_REGISTRY["get_account_balance"], AccountBalanceFilterSchema)
         self.assertEqual(TOOL_SCHEMA_REGISTRY["get_stock_level"], StockLevelFilterSchema)
         self.assertEqual(TOOL_SCHEMA_REGISTRY["get_product_info"], ProductInfoFilterSchema)
+        self.assertEqual(TOOL_SCHEMA_REGISTRY["get_locations"], LocationsFilterSchema)
 
     def test_dod_extractor_vendor_invoice_query(self):
         """
@@ -298,6 +320,36 @@ class TestExtractorNode(unittest.TestCase):
 
         result = extractor_node(state)
         self.assertEqual(result, {"extracted_params": {}})
+
+    def test_extractor_stock_level_with_location_and_history(self):
+        """Extractor extracts location_name and resolves product code from conversation history."""
+        # Simulated previous turn: User asks about AAEO-NPKG, assistant answers with SKU 3443 / AAEO-NPKG
+        history = [
+            HumanMessage(content="saya mau tanya stok barang AAEO-NPKG"),
+            AIMessage(content="### Informasi Ketersediaan Stok Barang\nSKU 3443 AAEO-NPKG Qty 1.05 unit"),
+        ]
+        state = create_initial_state(
+            user_query="kalau produk itu di mainstore berapa stoknya",
+            messages=history + [HumanMessage(content="kalau produk itu di mainstore berapa stoknya")],
+        )
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+
+        result = extractor_node(state)
+        params = result.get("extracted_params", {})
+
+        self.assertEqual(params.get("code"), "3443")
+        self.assertEqual(params.get("location_name"), "mainstore")
+
+    def test_extractor_get_locations_query(self):
+        """Extractor extracts search keyword for get_locations."""
+        state = create_initial_state("daftar gudang utama")
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_locations"
+
+        result = extractor_node(state)
+        params = result.get("extracted_params", {})
+        self.assertEqual(params.get("search"), "utama")
 
 
 class TestLangGraphPipelineChain(unittest.TestCase):

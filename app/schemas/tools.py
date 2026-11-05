@@ -73,6 +73,7 @@ class StockLevelFilterSchema(BaseModel):
     product_id: Optional[int] = Field(None, description="Product Variant ID (either product_id or code required)")
     code: Optional[str] = Field(None, description="Product SKU code, barcode, or product variant name (either product_id or code required)")
     location_id: Optional[int] = Field(None, description="Optional inventory location ID filter")
+    location_name: Optional[str] = Field(None, description="Optional warehouse or location name (e.g. 'mainstore', 'gudang utama')")
     limit: int = Field(20, ge=1, le=100, description="Max records to return")
     offset: int = Field(0, ge=0, description="Offset for pagination")
 
@@ -81,6 +82,14 @@ class StockLevelFilterSchema(BaseModel):
         if self.product_id is None and not self.code:
             raise ValueError("Either 'product_id' or 'code' (SKU/name) must be provided for stock check.")
         return self
+
+
+class LocationsFilterSchema(BaseModel):
+    """Input filter schema for inventory.get_locations."""
+    company_id: Optional[int] = Field(None, description="Company ID (defaults to default company)")
+    search: Optional[str] = Field(None, description="Keyword search matching warehouse or location name")
+    type: Optional[str] = Field(None, description="Location type filter: 'internal', 'customer', 'vendor'")
+    limit: int = Field(20, ge=1, le=50, description="Max results (1-50)")
 
 
 class ProductInfoFilterSchema(BaseModel):
