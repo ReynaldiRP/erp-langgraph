@@ -61,6 +61,12 @@ class TestRecordsCountCalculation(unittest.TestCase):
         self.assertEqual(_calculate_records_count(None), 0)
         self.assertEqual(_calculate_records_count({}), 0)
 
+    def test_count_from_zero_aggregate_balance_dict(self):
+        """Payload with only zero totals evaluates to 0 records."""
+        self.assertEqual(_calculate_records_count({"total_debit": 0.0, "total_credit": 0.0, "net_balance": 0.0}), 0)
+        self.assertEqual(_calculate_records_count({"accounts": [], "total_debit": 0.0, "total_credit": 0.0, "net_balance": 0.0}), 0)
+        self.assertEqual(_calculate_records_count({"total_debit": 50000.0, "total_credit": 0.0, "net_balance": 50000.0}), 1)
+
 
 class TestVerifierNodeTransitions(unittest.TestCase):
     """Test suite validating verifier_node status transitions, retries, and instructions."""

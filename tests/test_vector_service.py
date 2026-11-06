@@ -48,8 +48,8 @@ class TestVectorService(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(vector)
 
     @patch("app.services.vector_service.VectorService.get_embedding")
-    @patch("asyncpg.connect")
-    async def test_search_knowledge_success(self, mock_asyncpg_connect, mock_get_embedding):
+    @patch("asyncpg.create_pool", new_callable=AsyncMock)
+    async def test_search_knowledge_success(self, mock_create_pool, mock_get_embedding):
         # 768-dim mock vector
         mock_get_embedding.return_value = [0.05] * 768
 
@@ -64,7 +64,17 @@ class TestVectorService(unittest.IsolatedAsyncioTestCase):
             "metadata": '{"source_file": "sop_retur.md"}',
         }
         mock_conn.fetch.return_value = [mock_row]
-        mock_asyncpg_connect.return_value = mock_conn
+
+        # Mock asyncpg pool and acquire context manager
+        mock_pool = MagicMock()
+        mock_pool._closed = False
+        mock_pool.close = AsyncMock()
+
+        mock_acquire_cm = MagicMock()
+        mock_acquire_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_acquire_cm.__aexit__ = AsyncMock(return_value=None)
+        mock_pool.acquire.return_value = mock_acquire_cm
+        mock_create_pool.return_value = mock_pool
 
         results = await self.service.search_knowledge(
             query="Bagaimana SOP retur barang?",
@@ -76,12 +86,64 @@ class TestVectorService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0]["title"], "SOP Retur Barang v1.2")
         self.assertEqual(results[0]["similarity_score"], 0.885)
         self.assertIn("source_file", results[0]["metadata"])
+        mock_create_pool.assert_awaited_once()
+        mock_pool.acquire.assert_called_once()
 
     async def test_search_knowledge_no_db_url(self):
         service_no_db = VectorService(db_url=None, gemini_api_key="mock_key")
         with patch.object(service_no_db, "get_embedding", return_value=[0.1] * 768):
             results = await service_no_db.search_knowledge("Query")
             self.assertEqual(results, [])
+
+    @patch("asyncpg.create_pool", new_callable=AsyncMock)
+    async def test_get_pool_reuse(self, mock_create_pool):
+        mock_pool = MagicMock()
+        mock_pool._closed = False
+        mock_create_pool.return_value = mock_pool
+
+        pool1 = await self.service.get_pool()
+        pool2 = await self.service.get_pool()
+
+        self.assertIs(pool1, mock_pool)
+        self.assertIs(pool2, mock_pool)
+        mock_create_pool.assert_awaited_once()
+
+    @patch("asyncpg.create_pool", new_callable=AsyncMock)
+    async def test_close_pool(self, mock_create_pool):
+        mock_pool = MagicMock()
+        mock_pool._closed = False
+        mock_pool.close = AsyncMock()
+        mock_create_pool.return_value = mock_pool
+
+        pool = await self.service.get_pool()
+        self.assertIsNotNone(pool)
+        self.assertIsNotNone(self.service._pool)
+
+        await self.service.close_pool()
+        mock_pool.close.assert_awaited_once()
+        self.assertIsNone(self.service._pool)
+
+    @patch("app.services.vector_service.VectorService.get_embedding", return_value=[0.05] * 768)
+    @patch.object(VectorService, "get_pool", return_value=None)
+    async def test_search_knowledge_pool_failure(self, mock_get_pool, mock_get_embedding):
+        results = await self.service.search_knowledge("Query")
+        self.assertEqual(results, [])
+
+    @patch("pgvector.asyncpg.register_vector", new_callable=AsyncMock)
+    @patch("asyncpg.create_pool", new_callable=AsyncMock)
+    async def test_get_pool_init_registers_vector(self, mock_create_pool, mock_register_vector):
+        mock_pool = MagicMock()
+        mock_pool._closed = False
+        mock_create_pool.return_value = mock_pool
+
+        await self.service.get_pool()
+        self.assertTrue(mock_create_pool.awaited)
+        init_cb = mock_create_pool.call_args.kwargs.get("init")
+        self.assertIsNotNone(init_cb)
+
+        mock_conn = AsyncMock()
+        await init_cb(mock_conn)
+        mock_register_vector.assert_awaited_once_with(mock_conn)
 
 
 if __name__ == "__main__":

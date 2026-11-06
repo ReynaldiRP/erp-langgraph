@@ -3,6 +3,7 @@ LangGraph ReAct Agent with Conversational Memory and Human-in-the-Loop (HITL) Wr
 """
 from pathlib import Path
 from typing import Any, List, Optional
+import warnings
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
@@ -40,6 +41,9 @@ def create_erp_graph(
     """
     Build and compile the LangGraph agent graph.
 
+    .. deprecated::
+        Use app.graph.workflow.create_workflow_graph instead.
+
     Args:
         client: ERPClient instance. If None, initialized from settings.
         use_dynamic_tools: If True, fetches tools dynamically from ERP via GET /ai/tools/.
@@ -47,6 +51,11 @@ def create_erp_graph(
         model_provider: LLM provider override ('openrouter', 'openai').
         checkpointer: LangGraph checkpointer for state persistence. Defaults to MemorySaver().
     """
+    warnings.warn(
+        "create_erp_graph is deprecated. Use app.graph.workflow.create_workflow_graph instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     erp_client = client or ERPClient()
 
     # 1. Load Tools

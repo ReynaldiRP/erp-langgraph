@@ -1,7 +1,9 @@
 """
 LLM Model Factory supporting OpenRouter (with free model catalog & auto-fallback) and OpenAI.
 """
+import asyncio
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional
 import httpx
@@ -17,6 +19,7 @@ logger = logging.getLogger("llm_factory")
 _CACHED_FREE_MODELS: List[str] = []
 _LAST_CACHE_TIME: float = 0.0
 _CACHE_TTL_SECONDS: float = 900.0  # 15 minutes
+_CACHE_LOCK = threading.Lock()
 
 # Curated fallback list when offline or when dynamic lookup is unavailable
 DEFAULT_CURATED_FREE_MODELS = [
@@ -30,28 +33,21 @@ DEFAULT_CURATED_FREE_MODELS = [
 ]
 
 
-def fetch_free_models_catalog(
+def _sync_fetch_free_models_catalog(
     api_key: Optional[str] = None,
     force_refresh: bool = False,
     prioritize_tools: bool = True,
 ) -> List[str]:
     """
-    Fetch and return an active list of free models on OpenRouter, cross-referenced
-    with the `free_llm_models` library to prioritize models supporting tool calling & JSON output.
-
-    Args:
-        api_key: Optional OpenRouter API key for live discovery.
-        force_refresh: Bypass in-memory cache if True.
-        prioritize_tools: If True, models known to support tools/JSON appear first.
-
-    Returns:
-        List of OpenRouter model identifier strings (e.g. ['openrouter/free', ...]).
+    Synchronous worker that queries OpenRouter API and prioritizes models via free_llm_models.
+    Updates in-memory cache and returns the model ID list.
     """
     global _CACHED_FREE_MODELS, _LAST_CACHE_TIME
     now = time.time()
 
-    if not force_refresh and _CACHED_FREE_MODELS and (now - _LAST_CACHE_TIME < _CACHE_TTL_SECONDS):
-        return list(_CACHED_FREE_MODELS)
+    with _CACHE_LOCK:
+        if not force_refresh and _CACHED_FREE_MODELS and (now - _LAST_CACHE_TIME < _CACHE_TTL_SECONDS):
+            return list(_CACHED_FREE_MODELS)
 
     discovered_models: List[str] = []
     key = api_key or settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY
@@ -106,9 +102,93 @@ def fetch_free_models_catalog(
         discovered_models.sort(key=model_priority)
 
     # 4. Update Cache
-    _CACHED_FREE_MODELS = discovered_models
-    _LAST_CACHE_TIME = now
-    return list(_CACHED_FREE_MODELS)
+    with _CACHE_LOCK:
+        _CACHED_FREE_MODELS = discovered_models
+        _LAST_CACHE_TIME = now
+        return list(_CACHED_FREE_MODELS)
+
+
+async def afetch_free_models_catalog(
+    api_key: Optional[str] = None,
+    force_refresh: bool = False,
+    prioritize_tools: bool = True,
+) -> List[str]:
+    """
+    Asynchronously fetch free models catalog without blocking the event loop.
+    Offloads synchronous HTTP request to asyncio.to_thread.
+    """
+    global _CACHED_FREE_MODELS, _LAST_CACHE_TIME
+    now = time.time()
+
+    with _CACHE_LOCK:
+        if not force_refresh and _CACHED_FREE_MODELS and (now - _LAST_CACHE_TIME < _CACHE_TTL_SECONDS):
+            return list(_CACHED_FREE_MODELS)
+
+    return await asyncio.to_thread(
+        _sync_fetch_free_models_catalog,
+        api_key=api_key,
+        force_refresh=force_refresh,
+        prioritize_tools=prioritize_tools,
+    )
+
+
+def fetch_free_models_catalog(
+    api_key: Optional[str] = None,
+    force_refresh: bool = False,
+    prioritize_tools: bool = True,
+) -> List[str]:
+    """
+    Fetch and return an active list of free models on OpenRouter, cross-referenced
+    with the `free_llm_models` library to prioritize models supporting tool calling & JSON output.
+
+    When invoked from an active event loop, returns cached or curated models immediately
+    and schedules a background non-blocking refresh via afetch_free_models_catalog to avoid
+    blocking the loop. When invoked synchronously outside an event loop, runs directly.
+
+    Args:
+        api_key: Optional OpenRouter API key for live discovery.
+        force_refresh: Bypass in-memory cache if True.
+        prioritize_tools: If True, models known to support tools/JSON appear first.
+
+    Returns:
+        List of OpenRouter model identifier strings (e.g. ['openrouter/free', ...]).
+    """
+    global _CACHED_FREE_MODELS, _LAST_CACHE_TIME
+    now = time.time()
+
+    with _CACHE_LOCK:
+        if not force_refresh and _CACHED_FREE_MODELS and (now - _LAST_CACHE_TIME < _CACHE_TTL_SECONDS):
+            return list(_CACHED_FREE_MODELS)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Do not block the running event loop with synchronous network I/O.
+        # Schedule background non-blocking refresh via afetch_free_models_catalog
+        try:
+            asyncio.create_task(
+                afetch_free_models_catalog(
+                    api_key=api_key,
+                    force_refresh=True,
+                    prioritize_tools=prioritize_tools,
+                )
+            )
+        except Exception as exc:
+            logger.debug(f"Could not schedule background catalog refresh: {exc}")
+
+        with _CACHE_LOCK:
+            if _CACHED_FREE_MODELS:
+                return list(_CACHED_FREE_MODELS)
+        return list(DEFAULT_CURATED_FREE_MODELS)
+
+    return _sync_fetch_free_models_catalog(
+        api_key=api_key,
+        force_refresh=force_refresh,
+        prioritize_tools=prioritize_tools,
+    )
 
 
 def get_chat_model(

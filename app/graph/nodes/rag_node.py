@@ -59,6 +59,7 @@ async def rag_node(
 
     # Path 2: Fallback / standard path via Django Core API client
     if not chunks and (client is not None or not settings.VECTOR_DB_URL):
+        own_client = client is None
         erp_client = client or DjangoCoreClient()
         try:
             raw_res = await erp_client.fetch_knowledge(
@@ -86,6 +87,9 @@ async def rag_node(
         except Exception as exc:
             logger.error(f"Unexpected error in rag_node: {exc}", exc_info=True)
             return {"rag_context": [], "rag_sources": []}
+        finally:
+            if own_client:
+                await erp_client.aclose()
 
     # Filter chunks by similarity threshold
     threshold = float(settings.RAG_SIMILARITY_THRESHOLD)

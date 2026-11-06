@@ -93,7 +93,19 @@ def resolve_relative_dates(
         end_week = start_week + timedelta(days=6)
         return start_week.strftime("%Y-%m-%d"), end_week.strftime("%Y-%m-%d")
 
+    # 7. N hari terakhir (e.g. '3 hari terakhir', '7 hari terakhir')
+    n_days_match = re.search(r"\b(\d+)\s+hari\s+(?:terakhir|kebelakang|lalu)\b", cleaned)
+    if n_days_match:
+        n_days = int(n_days_match.group(1))
+        # N days window ending today (inclusive of today)
+        start_date = today - timedelta(days=max(0, n_days - 1))
+        return start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
+
     return None, None
+
+
+VENDOR_DELIMITERS = r"(?:bulan|hari|tanggal|minggu|tahun|status|sebesar|di|pada|yang|belum|sudah|lunas|semua|dibayar|terbayar|unpaid|paid|dan)"
+VENDOR_NAME_STOPWORDS = ("semua", "yang", "belum", "sudah", "lunas", "ini", "itu", "ada", "draft", "posted")
 
 
 def _fallback_extract_vendor_invoice(
@@ -105,21 +117,32 @@ def _fallback_extract_vendor_invoice(
 
     # Extract vendor name (e.g. 'vendor PT Sumber Makmur', 'PT Sumber Makmur', 'supplier Toko Kertas')
     vendor_pattern = re.search(
-        r"(?:vendor|supplier|pemasok)\s+([A-Za-z0-9\.\s]+?)(?:\s+(?:bulan|hari|tanggal|minggu|tahun|status|sebesar|di|pada)|$)",
+        rf"(?:vendor|supplier|pemasok)\s+([A-Za-z0-9\.\s]+?)(?:\s+{VENDOR_DELIMITERS}|$)",
         query,
         re.IGNORECASE,
     )
     if vendor_pattern:
-        params["vendor_name"] = vendor_pattern.group(1).strip()
+        v_name = vendor_pattern.group(1).strip()
+        if v_name.lower() not in VENDOR_NAME_STOPWORDS:
+            params["vendor_name"] = v_name
     else:
-        # Check for company prefixes like PT, CV, UD
+        # Check for company prefixes like PT, CV, UD, Toko
         prefix_pattern = re.search(
-            r"\b((?:PT|CV|UD|Toko)\s+[A-Za-z0-9\s]+?)(?:\s+(?:bulan|hari|tanggal|minggu|status)|$)",
+            rf"\b((?:PT|CV|UD|Toko)\.?\s+[A-Za-z0-9\.\s]+?)(?:\s+{VENDOR_DELIMITERS}|$)",
             query,
             re.IGNORECASE,
         )
         if prefix_pattern:
-            params["vendor_name"] = prefix_pattern.group(1).strip()
+            v_name = prefix_pattern.group(1).strip()
+            if v_name.lower() not in VENDOR_NAME_STOPWORDS:
+                params["vendor_name"] = v_name
+
+    # Extract status if explicitly specified in query
+    query_lower = query.lower()
+    if "belum lunas" in query_lower or "unpaid" in query_lower or "belum dibayar" in query_lower:
+        params["status"] = "unpaid"
+    elif "lunas" in query_lower or "paid" in query_lower or "sudah dibayar" in query_lower:
+        params["status"] = "paid"
 
     # Extract relative dates
     date_from, date_to = resolve_relative_dates(query, ref_date)
@@ -129,6 +152,14 @@ def _fallback_extract_vendor_invoice(
         params["date_to"] = date_to
 
     return params
+
+
+STOCK_STOPWORDS = (
+    "ini", "itu", "barang", "produk", "semua", "ada", "tersedia",
+    "stok", "stock", "sisa",
+    "di", "ke", "dari", "pada", "untuk", "terkait", "tentang",
+    "gudang", "lokasi", "customer", "pelanggan",
+)
 
 
 def _fallback_extract_stock_level(
@@ -147,18 +178,21 @@ def _fallback_extract_stock_level(
     )
     if loc_match:
         loc_candidate = loc_match.group(1).strip()
-        if loc_candidate.lower() not in ("mana", "sini", "situ", "kantor", "semua", "ini", "itu", "gudang", "lokasi"):
+        if (
+            loc_candidate.lower() not in ("mana", "sini", "situ", "kantor", "semua", "ini", "itu", "gudang", "lokasi")
+            and loc_candidate.lower() not in STOCK_STOPWORDS
+        ):
             params["location_name"] = loc_candidate
 
     # Pattern: 'stok AAEO-NPKG', 'stok barang 3443', 'stok terkait AAEO-NPKG'
     match = re.search(
-        r"(?:stok|stock|sisa|barang|produk)\s+(?:untuk\s+|terkait\s+|dari\s+|tentang\s+)?([A-Za-z0-9\-\_\.]+)",
+        r"(?:(?:stok|stock|sisa|barang|produk)\s+)+(?:untuk\s+|terkait\s+|dari\s+|tentang\s+)?([A-Za-z0-9\-\_\.]+)",
         cleaned,
         re.IGNORECASE,
     )
     if match:
         token = match.group(1).strip()
-        if token.lower() not in ("ini", "itu", "barang", "produk", "semua", "ada", "tersedia"):
+        if token.lower() not in STOCK_STOPWORDS:
             params["code"] = token
             return params
 
@@ -255,8 +289,11 @@ def extractor_node(
                 f"Reference Today's Date: {today.strftime('%Y-%m-%d')}\n"
                 f"Current Month Range: {month_start} to {month_end}\n\n"
                 f"Extract filter entities strictly adhering to the schema.\n"
-                f"If the user says 'bulan ini', set date_from='{month_start}' and date_to='{month_end}'.\n"
-                f"If the user refers to entities from previous turns (e.g. 'produk itu', 'barang tadi', 'vendor tersebut', 'itu'), "
+                f"Guidelines for extracted fields:\n"
+                f"- For 'search': Extract ONLY key entity names or document numbers (e.g. 'TikTok', 'PT Sumber Makmur', 'BCA'). Do NOT include full conversational phrases like 'aku mau tanya', 'saldo di jurnal', or relative dates.\n"
+                f"- For 'account_code' (in get_account_balance): Only set if user provided an actual account code (e.g. '11285', '111100'). If the user provided a name like 'bank tiktok' or 'marketplace tiktok', do NOT set 'account_code' to the name.\n"
+                f"- If the user specifies relative dates like 'bulan ini' or '3 hari terakhir', map them to date_from and date_to.\n"
+                f"- If the user refers to entities from previous turns (e.g. 'produk itu', 'barang tadi', 'vendor tersebut', 'itu'), "
                 f"resolve the specific SKU, code, or entity name from the conversation history."
             )
 

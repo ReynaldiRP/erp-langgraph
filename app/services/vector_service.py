@@ -3,6 +3,7 @@ Dedicated Vector Service & Google Gemini Embedding for FastPrint ERP.
 Provides semantic embedding generation via Google GenAI SDK (gemini-embedding-001)
 and vector similarity retrieval using asyncpg and pgvector on a dedicated PostgreSQL instance.
 """
+import asyncio
 import json
 import logging
 import os
@@ -32,6 +33,66 @@ class VectorService:
         self.gemini_api_key = gemini_api_key or settings.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY")
         self.embedding_model = embedding_model or settings.GEMINI_EMBEDDING_MODEL
         self._genai_client = None
+        self._pool: Optional[Any] = None
+        self._pool_lock: Optional[asyncio.Lock] = None
+
+    def _get_pool_lock(self) -> asyncio.Lock:
+        """Lazily initialize pool lock within the running event loop."""
+        if self._pool_lock is None:
+            self._pool_lock = asyncio.Lock()
+        return self._pool_lock
+
+    async def get_pool(self) -> Optional[Any]:
+        """
+        Get or initialize the dedicated asyncpg connection pool for PGVector.
+        Registers pgvector extension types on each newly established connection.
+        """
+        if not self.db_url:
+            return None
+
+        if self._pool is not None and not getattr(self._pool, "_closed", False):
+            return self._pool
+
+        async with self._get_pool_lock():
+            if self._pool is not None and not getattr(self._pool, "_closed", False):
+                return self._pool
+
+            try:
+                import asyncpg
+                from pgvector.asyncpg import register_vector
+
+                clean_url = self.db_url.replace("postgresql+asyncpg://", "postgresql://")
+
+                async def _init_connection(conn):
+                    await register_vector(conn)
+
+                self._pool = await asyncpg.create_pool(
+                    clean_url,
+                    min_size=1,
+                    max_size=10,
+                    command_timeout=settings.REQUEST_TIMEOUT_SEC,
+                    init=_init_connection,
+                )
+                logger.info("Dedicated PGVector asyncpg connection pool initialized successfully.")
+                return self._pool
+            except Exception as exc:
+                logger.error(f"Failed to create asyncpg connection pool: {exc}")
+                return None
+
+    async def close_pool(self) -> None:
+        """
+        Gracefully close all connections in the asyncpg pool.
+        """
+        async with self._get_pool_lock():
+            if self._pool is not None:
+                try:
+                    if not getattr(self._pool, "_closed", False):
+                        await self._pool.close()
+                except Exception as exc:
+                    logger.warning(f"Error while closing asyncpg connection pool: {exc}")
+                finally:
+                    self._pool = None
+                logger.info("Dedicated PGVector asyncpg connection pool closed.")
 
     def _get_genai_client(self):
         """Lazy load and initialize Google GenAI Client."""
@@ -112,74 +173,68 @@ class VectorService:
             logger.info("Gemini query embedding unavailable; returning empty knowledge context.")
             return []
 
-        # 2. Query Dedicated PostgreSQL via asyncpg
+        # 2. Query Dedicated PostgreSQL via connection pool
         if not self.db_url:
             logger.info("VECTOR_DB_URL not configured. Returning empty vector search results.")
             return []
 
+        pool = await self.get_pool()
+        if pool is None:
+            logger.warning("Dedicated PGVector connection pool unavailable. Returning empty results.")
+            return []
+
         try:
-            import asyncpg
-            from pgvector.asyncpg import register_vector
+            # Format vector list for pgvector (asyncpg accepts list of floats)
+            vector_arr = [float(v) for v in query_vector]
 
-            # Clean URL if it has postgresql+asyncpg:// prefix
-            clean_url = self.db_url.replace("postgresql+asyncpg://", "postgresql://")
-            conn = await asyncpg.connect(clean_url)
-            try:
-                await register_vector(conn)
+            base_sql = f"""
+                SELECT 
+                    id,
+                    title,
+                    category,
+                    content,
+                    metadata,
+                    1 - (embedding <=> $1) AS similarity_score
+                FROM {KNOWLEDGE_TABLE_NAME}
+                WHERE company_id = $2 AND is_active = TRUE
+            """
+            params = [vector_arr, int(company_id)]
+            param_idx = 3
 
-                # Format vector list for pgvector (asyncpg accepts list of floats)
-                vector_arr = [float(v) for v in query_vector]
-
-                base_sql = f"""
-                    SELECT 
-                        id,
-                        title,
-                        category,
-                        content,
-                        metadata,
-                        1 - (embedding <=> $1) AS similarity_score
-                    FROM {KNOWLEDGE_TABLE_NAME}
-                    WHERE company_id = $2 AND is_active = TRUE
-                """
-                params = [vector_arr, int(company_id)]
-                param_idx = 3
-
-                if category:
-                    base_sql += f" AND category = ${param_idx}"
-                    params.append(category)
-                    param_idx += 1
-
-                base_sql += f" AND (1 - (embedding <=> $1)) >= ${param_idx}"
-                params.append(min_score)
+            if category:
+                base_sql += f" AND category = ${param_idx}"
+                params.append(category)
                 param_idx += 1
 
-                base_sql += f" ORDER BY embedding <=> $1 ASC LIMIT ${param_idx};"
-                params.append(int(top_k))
+            base_sql += f" AND (1 - (embedding <=> $1)) >= ${param_idx}"
+            params.append(min_score)
+            param_idx += 1
 
+            base_sql += f" ORDER BY embedding <=> $1 ASC LIMIT ${param_idx};"
+            params.append(int(top_k))
+
+            async with pool.acquire() as conn:
                 rows = await conn.fetch(base_sql, *params)
 
-                results = []
-                for row in rows:
-                    meta_val = row["metadata"]
-                    if isinstance(meta_val, str):
-                        try:
-                            meta_val = json.loads(meta_val)
-                        except Exception:
-                            meta_val = {}
+            results = []
+            for row in rows:
+                meta_val = row["metadata"]
+                if isinstance(meta_val, str):
+                    try:
+                        meta_val = json.loads(meta_val)
+                    except Exception:
+                        meta_val = {}
 
-                    results.append({
-                        "id": str(row["id"]),
-                        "title": row["title"],
-                        "category": row["category"],
-                        "content": row["content"],
-                        "similarity_score": round(float(row["similarity_score"]), 4),
-                        "metadata": meta_val or {},
-                    })
+                results.append({
+                    "id": str(row["id"]),
+                    "title": row["title"],
+                    "category": row["category"],
+                    "content": row["content"],
+                    "similarity_score": round(float(row["similarity_score"]), 4),
+                    "metadata": meta_val or {},
+                })
 
-                return results
-            finally:
-                await conn.close()
-
+            return results
         except Exception as exc:
             logger.warning(f"Error querying Dedicated PGVector database: {exc}")
             return []

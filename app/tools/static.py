@@ -3,6 +3,7 @@ Static typed LangChain tool definitions for FastPrint ERP pilot tools.
 Binds centralized Pydantic schemas from app.schemas.tools with ERPClient execution.
 """
 from typing import Any, Dict, List, Optional
+import warnings
 from langchain_core.tools import tool
 
 from app.services.erp_client import ERPClient
@@ -18,6 +19,11 @@ def create_static_tools(client: ERPClient) -> List[Any]:
     """
     Instantiate and return static typed LangChain tools bound to an ERPClient instance.
     """
+    warnings.warn(
+        "create_static_tools is deprecated.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
     # 1. Accounting: Get Account Balance
     @tool("accounting_get_account_balance", args_schema=AccountBalanceFilterSchema)

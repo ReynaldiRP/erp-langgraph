@@ -110,6 +110,52 @@ class TestRouterNode(unittest.TestCase):
         self.assertNotEqual(result.get("detected_tool"), "fetch_vendor_invoices")
         self.assertEqual(result["detected_domain"], "general")
 
+    def test_customer_inventory_stock_routes_to_inventory_tool(self):
+        """
+        R2: Queries mentioning customers for inventory stock check
+        must route to inventory domain and get_stock_level tool.
+        """
+        queries = [
+            "Cek stok untuk customer Budi",
+            "Berapa sisa stok kertas untuk pelanggan?",
+            "cek stok barang untuk customer",
+        ]
+        for query in queries:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertEqual(result["detected_domain"], "inventory", f"Failed for '{query}'")
+            self.assertEqual(result["detected_tool"], "get_stock_level", f"Failed for '{query}'")
+
+    def test_customer_product_info_routes_to_inventory_tool(self):
+        """
+        R2: Queries mentioning customers for product details
+        must route to inventory domain and get_product_info tool.
+        """
+        queries = [
+            "Detail produk pesanan pelanggan Toko Prima",
+            "Info harga barang pesanan customer",
+        ]
+        for query in queries:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertEqual(result["detected_domain"], "inventory", f"Failed for '{query}'")
+            self.assertEqual(result["detected_tool"], "get_product_info", f"Failed for '{query}'")
+
+    def test_customer_billing_still_triggers_negative_guardrail(self):
+        """
+        R2: Customer inquiries targeting invoices/billing must still route to general domain.
+        """
+        queries = [
+            "Cek tagihan pelanggan PT Sumber Makmur",
+            "Cek faktur penjualan customer Toko Maju",
+            "Tagihan customer Budi dan stok barang",
+        ]
+        for query in queries:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertEqual(result["detected_domain"], "general", f"Failed for '{query}'")
+            self.assertIsNone(result.get("detected_tool"), f"Failed for '{query}'")
+
     def test_greetings_and_casual_inquiries_route_to_general_with_no_tool(self):
         """Greetings, test pings, and pleasantries must route to general without any tool."""
         greetings = ["Halo", "halo", "Hai min", "Selamat pagi", "assalamu'alaikum", "terima kasih", "tes", "bisa bantu apa"]
@@ -160,6 +206,14 @@ class TestRouterNode(unittest.TestCase):
     def test_accounting_journal_entries_routing(self):
         """General journal inquiry routes to get_journal_entries."""
         state = create_initial_state("Tampilkan entri jurnal transaksi bulan lalu")
+        result = router_node(state)
+
+        self.assertEqual(result["detected_domain"], "accounting")
+        self.assertEqual(result["detected_tool"], "get_journal_entries")
+
+    def test_accounting_journal_entries_routing_with_saldo_and_days(self):
+        """Journal inquiry mentioning saldo and relative days routes to get_journal_entries."""
+        state = create_initial_state("aku mau tanya saldo di jurnal marketplace tiktok 3 hari terakhir")
         result = router_node(state)
 
         self.assertEqual(result["detected_domain"], "accounting")
@@ -351,6 +405,100 @@ class TestExtractorNode(unittest.TestCase):
         params = result.get("extracted_params", {})
         self.assertEqual(params.get("search"), "utama")
 
+    def test_extractor_stock_preposition_not_extracted_as_sku(self):
+        """
+        R3: Indonesian prepositions ('di', 'ke', 'dari', 'pada', 'untuk', 'terkait', 'tentang')
+        must not be extracted as SKU codes in stock level queries.
+        """
+        # Query 1: 'cek stok di gudang utama' -> location_name='utama', code is None
+        state1 = create_initial_state("cek stok di gudang utama")
+        state1["detected_domain"] = "inventory"
+        state1["detected_tool"] = "get_stock_level"
+        params1 = extractor_node(state1).get("extracted_params", {})
+        self.assertEqual(params1.get("location_name"), "utama")
+        self.assertIsNone(params1.get("code"))
+
+        # Query 2: 'cek stok ke cabang' -> code is None
+        state2 = create_initial_state("cek stok ke cabang")
+        state2["detected_domain"] = "inventory"
+        state2["detected_tool"] = "get_stock_level"
+        params2 = extractor_node(state2).get("extracted_params", {})
+        self.assertIsNone(params2.get("code"))
+
+        # Query 3: 'cek stok pada rak 2' -> code is None
+        state3 = create_initial_state("cek stok pada rak 2")
+        state3["detected_domain"] = "inventory"
+        state3["detected_tool"] = "get_stock_level"
+        params3 = extractor_node(state3).get("extracted_params", {})
+        self.assertIsNone(params3.get("code"))
+
+        # Query 4: 'cek stok dari gudang' -> code is None
+        state4 = create_initial_state("cek stok dari gudang")
+        state4["detected_domain"] = "inventory"
+        state4["detected_tool"] = "get_stock_level"
+        params4 = extractor_node(state4).get("extracted_params", {})
+        self.assertIsNone(params4.get("code"))
+
+        # Query 5: 'cek stok di gudang utama untuk AAEO-NPKG' -> location_name='utama', code='AAEO-NPKG'
+        state5 = create_initial_state("cek stok di gudang utama untuk AAEO-NPKG")
+        state5["detected_domain"] = "inventory"
+        state5["detected_tool"] = "get_stock_level"
+        params5 = extractor_node(state5).get("extracted_params", {})
+        self.assertEqual(params5.get("location_name"), "utama")
+        self.assertEqual(params5.get("code"), "AAEO-NPKG")
+
+        # Query 6: 'cek stok terkait AAEO-NPKG' -> code='AAEO-NPKG'
+        state6 = create_initial_state("cek stok terkait AAEO-NPKG")
+        state6["detected_domain"] = "inventory"
+        state6["detected_tool"] = "get_stock_level"
+        params6 = extractor_node(state6).get("extracted_params", {})
+        self.assertEqual(params6.get("code"), "AAEO-NPKG")
+
+        # Query 7: 'cek stok tentang AAEO-NPKG' -> code='AAEO-NPKG'
+        state7 = create_initial_state("cek stok tentang AAEO-NPKG")
+        state7["detected_domain"] = "inventory"
+        state7["detected_tool"] = "get_stock_level"
+        params7 = extractor_node(state7).get("extracted_params", {})
+        self.assertEqual(params7.get("code"), "AAEO-NPKG")
+
+        # Query 8: 'cek sisa stok untuk ART-PPR-210' -> code='ART-PPR-210' (sisa and stok in stopwords)
+        state8 = create_initial_state("cek sisa stok untuk ART-PPR-210")
+        state8["detected_domain"] = "inventory"
+        state8["detected_tool"] = "get_stock_level"
+        params8 = extractor_node(state8).get("extracted_params", {})
+        self.assertEqual(params8.get("code"), "ART-PPR-210")
+
+        # Query 9: 'cek stok di gudang untuk customer Andi' -> location_name must not be 'untuk'
+        state9 = create_initial_state("cek stok di gudang untuk customer Andi")
+        state9["detected_domain"] = "inventory"
+        state9["detected_tool"] = "get_stock_level"
+        params9 = extractor_node(state9).get("extracted_params", {})
+        self.assertNotEqual(params9.get("location_name"), "untuk")
+
+    def test_extractor_vendor_delimiters_trim_trailing_words(self):
+        """
+        R9: Delimiters like 'yang', 'belum', 'lunas', 'semua', 'sudah', 'dan' must stop vendor name
+        extraction and prevent trailing fragment absorption.
+        """
+        cases = [
+            ("tagihan vendor PT Sumber Makmur yang belum lunas", "PT Sumber Makmur", "unpaid"),
+            ("faktur vendor CV Abadi Jaya belum lunas", "CV Abadi Jaya", "unpaid"),
+            ("semua tagihan supplier Toko Kertas semua", "Toko Kertas", None),
+            ("Faktur PT Sumber Makmur yang belum dibayar", "PT Sumber Makmur", "unpaid"),
+            ("daftar tagihan vendor PT Cahaya semua", "PT Cahaya", None),
+            ("tagihan vendor CV Abadi Jaya lunas", "CV Abadi Jaya", "paid"),
+            ("faktur vendor UD Maju Bersama sudah dibayar", "UD Maju Bersama", "paid"),
+            ("faktur vendor Toko Kertas dan status lunas", "Toko Kertas", "paid"),
+        ]
+        for query, expected_vendor, expected_status in cases:
+            state = create_initial_state(query)
+            state["detected_domain"] = "accounting"
+            state["detected_tool"] = "fetch_vendor_invoices"
+            params = extractor_node(state, ref_date=self.anchor_date).get("extracted_params", {})
+            self.assertEqual(params.get("vendor_name"), expected_vendor, f"Failed vendor extraction for '{query}'")
+            if expected_status:
+                self.assertEqual(params.get("status"), expected_status, f"Failed status extraction for '{query}'")
+
 
 class TestLangGraphPipelineChain(unittest.TestCase):
     """Integration test chaining router_node and extractor_node in LangGraph StateGraph."""
@@ -388,6 +536,32 @@ class TestLangGraphPipelineChain(unittest.TestCase):
         self.assertEqual(params.get("vendor_name"), "PT Sumber Makmur")
         self.assertEqual(params.get("date_from"), "2026-11-01")
         self.assertEqual(params.get("date_to"), "2026-11-30")
+
+    def test_end_to_end_customer_inventory_chain(self):
+        """
+        R2 + R3 integration: Customer inventory stock check routes to inventory
+        and extracts location without confusing preposition with code.
+        """
+        anchor_date = date(2026, 11, 4)
+
+        builder = StateGraph(AgentState)
+        builder.add_node("router", router_node)
+        builder.add_node("extractor", lambda s: extractor_node(s, ref_date=anchor_date))
+
+        builder.add_edge(START, "router")
+        builder.add_edge("router", "extractor")
+        builder.add_edge("extractor", END)
+
+        graph = builder.compile()
+
+        state = create_initial_state("Cek stok di gudang utama untuk customer Budi")
+        final_state = graph.invoke(state)
+
+        self.assertEqual(final_state["detected_domain"], "inventory")
+        self.assertEqual(final_state["detected_tool"], "get_stock_level")
+        params = final_state.get("extracted_params", {})
+        self.assertEqual(params.get("location_name"), "utama")
+        self.assertIsNone(params.get("code"))
 
 
 if __name__ == "__main__":

@@ -49,42 +49,42 @@ async def tool_node(
     # Query-extracted company_id takes precedence over active session state company_id
     target_company_id = extracted_params.get("company_id") or state.get("company_id")
 
+    own_client = client is None
     erp_client = client or DjangoCoreClient()
 
-    # Adapt parameters for vendor invoices: map vendor_name to search if search is unset
-    if detected_tool in ("fetch_vendor_invoices", "get_journal_entries"):
-        if "vendor_name" in extracted_params and "search" not in extracted_params:
-            extracted_params["search"] = extracted_params["vendor_name"]
-
-    # Dynamic Tool Dispatch Registry
-    dispatch_map = {
-        "fetch_vendor_invoices": erp_client.fetch_vendor_invoices,
-        "get_journal_entries": erp_client.fetch_journal_entries,
-        "get_account_balance": erp_client.fetch_account_balance,
-        "get_stock_level": erp_client.fetch_stock_level,
-        "get_product_info": erp_client.fetch_product_info,
-        "get_locations": erp_client.fetch_locations,
-    }
-
-    # Sequential 2-Step Execution: If checking stock level with location_name, resolve location_id first!
-    if detected_tool == "get_stock_level" and extracted_params.get("location_name") and not extracted_params.get("location_id"):
-        try:
-            loc_res = await erp_client.fetch_locations(
-                params={"search": extracted_params["location_name"]},
-                user_token=user_token,
-                company_id=target_company_id,
-            )
-            locations = loc_res.get("locations", []) if isinstance(loc_res, dict) else (loc_res if isinstance(loc_res, list) else [])
-            if locations:
-                matched_loc = locations[0]
-                extracted_params["location_id"] = matched_loc.get("id")
-                extracted_params["matched_location_name"] = matched_loc.get("name")
-        except Exception as loc_err:
-            logger.warning(f"Could not resolve location_name '{extracted_params.get('location_name')}': {loc_err}")
-
-    handler = dispatch_map.get(detected_tool, erp_client.fetch_vendor_invoices)
-
     try:
+        # Adapt parameters for vendor invoices: map vendor_name to search if search is unset
+        if detected_tool in ("fetch_vendor_invoices", "get_journal_entries"):
+            if "vendor_name" in extracted_params and "search" not in extracted_params:
+                extracted_params["search"] = extracted_params["vendor_name"]
+
+        # Dynamic Tool Dispatch Registry
+        dispatch_map = {
+            "fetch_vendor_invoices": erp_client.fetch_vendor_invoices,
+            "get_journal_entries": erp_client.fetch_journal_entries,
+            "get_account_balance": erp_client.fetch_account_balance,
+            "get_stock_level": erp_client.fetch_stock_level,
+            "get_product_info": erp_client.fetch_product_info,
+            "get_locations": erp_client.fetch_locations,
+        }
+
+        # Sequential 2-Step Execution: If checking stock level with location_name, resolve location_id first!
+        if detected_tool == "get_stock_level" and extracted_params.get("location_name") and not extracted_params.get("location_id"):
+            try:
+                loc_res = await erp_client.fetch_locations(
+                    params={"search": extracted_params["location_name"]},
+                    user_token=user_token,
+                    company_id=target_company_id,
+                )
+                locations = loc_res.get("locations", []) if isinstance(loc_res, dict) else (loc_res if isinstance(loc_res, list) else [])
+                if locations:
+                    matched_loc = locations[0]
+                    extracted_params["location_id"] = matched_loc.get("id")
+                    extracted_params["matched_location_name"] = matched_loc.get("name")
+            except Exception as loc_err:
+                logger.warning(f"Could not resolve location_name '{extracted_params.get('location_name')}': {loc_err}")
+
+        handler = dispatch_map.get(detected_tool, erp_client.fetch_vendor_invoices)
         raw_result = await handler(
             params=extracted_params,
             user_token=user_token,
@@ -125,6 +125,9 @@ async def tool_node(
             "verification_status": "ERROR",
             "error_message": f"Unexpected execution error: {str(exc)}",
         }
+    finally:
+        if own_client:
+            await erp_client.aclose()
 
 
 def tool_node_sync(

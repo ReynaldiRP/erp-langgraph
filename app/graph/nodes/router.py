@@ -56,6 +56,16 @@ class RouterDecision(BaseModel):
 # Disambiguation term sets
 CUSTOMER_TERMS = {"pelanggan", "customer", "piutang", "penjualan", "sales", "buyer", "klien"}
 VENDOR_TERMS = {"vendor", "supplier", "pemasok", "hutang", "pembelian", "beli"}
+CUSTOMER_BILLING_TERMS = (
+    "tagihan",
+    "faktur",
+    "invoice",
+    "bill",
+    "piutang",
+    "hutang",
+    "pembayaran",
+    "bayar",
+)
 
 ACCOUNTING_BALANCE_PATTERNS = [
     r"\bsaldo(nya)?\b",
@@ -195,6 +205,10 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
     if has_vendor and ("tagihan" in cleaned or "faktur" in cleaned or "invoice" in cleaned or "bill" in cleaned or "hutang" in cleaned):
         live_domain = "accounting"
         live_tool = "fetch_vendor_invoices"
+    elif ("jurnal" in cleaned or "journal" in cleaned) and any(kw in cleaned for kw in ("entri", "transaksi", "daftar", "list", "riwayat", "terakhir", "hari", "bulan", "minggu")):
+        # If user explicitly refers to journal transaction history/entries (e.g. 'jurnal marketplace tiktok 3 hari terakhir')
+        live_domain = "accounting"
+        live_tool = "get_journal_entries"
     elif _match_any(ACCOUNTING_BALANCE_PATTERNS, cleaned):
         live_domain = "accounting"
         live_tool = "get_account_balance"
@@ -215,7 +229,14 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
         live_tool = "fetch_vendor_invoices"
 
     # 1. Negative Guardrail: Customer Invoice / Billing Inquiries
-    if has_customer and not has_vendor and not is_rag:
+    # Restrict customer guardrail so that customer inquiries are only flagged or routed away
+    # when targeting vendor invoices or accounting billing. Allow inventory stock, locations,
+    # and product lookups mentioning customers to proceed to inventory tools.
+    has_customer_billing = has_customer and (
+        live_domain != "inventory"
+        or any(term in cleaned for term in CUSTOMER_BILLING_TERMS)
+    )
+    if has_customer_billing and not has_vendor and not is_rag:
         return {
             "detected_domain": "general",
             "detected_tool": None,
@@ -309,7 +330,8 @@ def router_node(
                 "4. 'general': Pure greetings or asking about FastPrint ERP capabilities.\n"
                 "5. 'out_of_scope': Inquiries unrelated to FastPrint ERP data or operational records.\n\n"
                 "CRITICAL GUARDRAILS:\n"
-                "- Customer / pelanggan inquiries must NOT be routed to 'fetch_vendor_invoices'. Set domain='general' and tool=null.\n"
+                "- Customer / pelanggan inquiries targeting invoices, billing, or accounts receivable must NOT be routed to 'fetch_vendor_invoices'. Set domain='general' and tool=null.\n"
+                "- Customer / pelanggan inquiries asking about inventory stock, warehouse locations, or product details must be routed to domain='inventory' with the appropriate inventory tool.\n"
                 "- Whenever domain is 'general' or 'out_of_scope', tool MUST be null."
             )
             structured_model = model.with_structured_output(RouterDecision)

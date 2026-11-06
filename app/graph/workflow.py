@@ -4,9 +4,11 @@ Orchestrates router, extractor, tool execution, verifier, and synthesizer nodes
 into an end-to-end multi-node pipeline with conditional branching, retry cycles,
 and multi-turn conversational memory.
 """
+import atexit
 import asyncio
 import concurrent.futures
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, START, END
@@ -202,6 +204,40 @@ async def arun_workflow(
     return final_state
 
 
+_WORKFLOW_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_EXECUTOR_LOCK = threading.Lock()
+
+
+def get_workflow_executor(max_workers: Optional[int] = None) -> concurrent.futures.ThreadPoolExecutor:
+    """
+    Acquire or instantiate reusable ThreadPoolExecutor for run_workflow_sync.
+    Thread-safe and lazily initialized.
+    """
+    global _WORKFLOW_EXECUTOR
+    if _WORKFLOW_EXECUTOR is None or getattr(_WORKFLOW_EXECUTOR, "_shutdown", False):
+        with _EXECUTOR_LOCK:
+            if _WORKFLOW_EXECUTOR is None or getattr(_WORKFLOW_EXECUTOR, "_shutdown", False):
+                _WORKFLOW_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max_workers or 4,
+                    thread_name_prefix="WorkflowSyncRunner",
+                )
+    return _WORKFLOW_EXECUTOR
+
+
+def shutdown_workflow_executor(wait: bool = False) -> None:
+    """
+    Cleanly terminate the reusable workflow ThreadPoolExecutor.
+    """
+    global _WORKFLOW_EXECUTOR
+    with _EXECUTOR_LOCK:
+        if _WORKFLOW_EXECUTOR is not None:
+            _WORKFLOW_EXECUTOR.shutdown(wait=wait)
+            _WORKFLOW_EXECUTOR = None
+
+
+atexit.register(shutdown_workflow_executor)
+
+
 def run_workflow_sync(
     user_query: str,
     user_token: Optional[str] = None,
@@ -212,6 +248,7 @@ def run_workflow_sync(
     """
     Synchronously run the compiled workflow graph (safe for CLI and test runners).
     Handles environments with or without an active asyncio event loop.
+    Reuses a cached module-level ThreadPoolExecutor when called within an active loop.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -227,7 +264,8 @@ def run_workflow_sync(
     )
 
     if loop and loop.is_running():
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            return executor.submit(asyncio.run, coro).result()
+        executor = get_workflow_executor()
+        return executor.submit(asyncio.run, coro).result()
     else:
         return asyncio.run(coro)
+

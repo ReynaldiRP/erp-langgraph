@@ -4,6 +4,7 @@ Calls GET /ai/tools/ on ERP and converts discovered tool metadata into LangChain
 """
 import logging
 from typing import Any, Dict, List, Optional
+import warnings
 from langchain_core.tools import StructuredTool
 from pydantic import create_model, Field
 
@@ -32,6 +33,11 @@ def create_dynamic_tools(client: ERPClient) -> List[StructuredTool]:
     """
     Fetch all registered tools from ERP /ai/tools/ and construct LangChain StructuredTools.
     """
+    warnings.warn(
+        "create_dynamic_tools is deprecated.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     discovered_tools = client.list_tools()
     dynamic_tools: List[StructuredTool] = []
 

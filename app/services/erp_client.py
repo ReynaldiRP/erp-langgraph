@@ -23,7 +23,9 @@ class ERPClientError(Exception):
 
 class ERPClient:
     """
-    HTTP Client interacting with FastPrint ERP /ai/tools/ API via HTTPX.
+    Synchronous HTTP Client interacting with FastPrint ERP /ai/tools/ API via HTTPX.
+    Companion to asynchronous DjangoCoreClient (used in StateGraph pipeline nodes).
+    Retained for synchronous scripts, CLI tools, and unit tests.
     """
 
     def __init__(

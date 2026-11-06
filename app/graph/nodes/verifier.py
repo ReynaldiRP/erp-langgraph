@@ -49,6 +49,16 @@ def _calculate_records_count(tool_result: Any) -> int:
         if "data" in tool_result and isinstance(tool_result["data"], (dict, list)):
             return _calculate_records_count(tool_result["data"])
 
+        # Specific check for aggregate balance payloads without account records
+        # If dict only contains aggregate totals (net_balance, total_debit, total_credit)
+        # and all are 0, this indicates no account was found or no activity exists.
+        balance_metric_keys = {"net_balance", "total_debit", "total_credit", "grand_net_balance", "grand_total_debit", "grand_total_credit"}
+        if all(k in balance_metric_keys for k in tool_result.keys()):
+            # All keys are aggregate financial sums; check if any non-zero value exists
+            has_value = any(float(v or 0) != 0.0 for v in tool_result.values() if isinstance(v, (int, float)))
+            if not has_value:
+                return 0
+
         # Single record payload (e.g. stock level dict containing product_id or qty_on_hand)
         return 1
 

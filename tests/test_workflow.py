@@ -17,7 +17,13 @@ from app.graph.workflow import (
     decide_after_router,
     arun_workflow,
     run_workflow_sync,
+    get_workflow_executor,
+    shutdown_workflow_executor,
 )
+import app.graph.workflow as workflow_module
+from app.core.config import settings
+from app.graph.nodes.tool_node import tool_node
+from app.graph.nodes.rag_node import rag_node
 from app.services.django_client import DjangoCoreClient, DjangoAuthError
 
 
@@ -293,6 +299,87 @@ class TestSynchronousRunnerHelper(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertIn("final_answer", result)
             self.assertEqual(result["verification_status"], "EMPTY")
+
+    def test_workflow_executor_singleton_reuse(self):
+        """get_workflow_executor must return the same executor singleton instance across calls."""
+        e1 = get_workflow_executor()
+        e2 = get_workflow_executor()
+        self.assertIs(e1, e2)
+
+    def test_workflow_executor_shutdown_and_reinitialization(self):
+        """shutdown_workflow_executor resets executor, and next call creates a fresh active one."""
+        e1 = get_workflow_executor()
+        self.assertFalse(e1._shutdown)
+        shutdown_workflow_executor(wait=False)
+        self.assertIsNone(workflow_module._WORKFLOW_EXECUTOR)
+        e2 = get_workflow_executor()
+        self.assertIsNotNone(e2)
+        self.assertFalse(e2._shutdown)
+
+
+class TestHttpClientLifecycle(unittest.IsolatedAsyncioTestCase):
+    """Test suite validating DjangoCoreClient lifecycle management in tool_node and rag_node (R4)."""
+
+    async def test_tool_node_own_client_closed_in_finally(self):
+        """tool_node must await aclose() when managing its own DjangoCoreClient."""
+        mock_instance = MagicMock(spec=DjangoCoreClient)
+        mock_instance.fetch_vendor_invoices = AsyncMock(
+            return_value={"total_count": 0, "entries": []}
+        )
+        mock_instance.aclose = AsyncMock()
+
+        with patch("app.graph.nodes.tool_node.DjangoCoreClient", return_value=mock_instance):
+            state = create_initial_state(user_query="Tagihan vendor ABC")
+            state["detected_domain"] = "accounting"
+            state["detected_tool"] = "fetch_vendor_invoices"
+            res = await tool_node(state, client=None)
+            self.assertEqual(res["verification_status"], "VALID")
+            mock_instance.aclose.assert_awaited_once()
+
+    async def test_tool_node_injected_client_not_closed(self):
+        """tool_node must NOT await aclose() when client is externally injected."""
+        mock_instance = MagicMock(spec=DjangoCoreClient)
+        mock_instance.fetch_vendor_invoices = AsyncMock(
+            return_value={"total_count": 0, "entries": []}
+        )
+        mock_instance.aclose = AsyncMock()
+
+        state = create_initial_state(user_query="Tagihan vendor ABC")
+        state["detected_domain"] = "accounting"
+        state["detected_tool"] = "fetch_vendor_invoices"
+        res = await tool_node(state, client=mock_instance)
+        self.assertEqual(res["verification_status"], "VALID")
+        mock_instance.aclose.assert_not_called()
+
+    async def test_rag_node_own_client_closed_in_finally(self):
+        """rag_node must await aclose() when managing its own DjangoCoreClient."""
+        mock_instance = MagicMock(spec=DjangoCoreClient)
+        mock_instance.fetch_knowledge = AsyncMock(return_value={"chunks": []})
+        mock_instance.aclose = AsyncMock()
+
+        with patch("app.graph.nodes.rag_node.DjangoCoreClient", return_value=mock_instance), \
+             patch.object(settings, "ENABLE_RAG", True), \
+             patch.object(settings, "VECTOR_DB_URL", ""):
+            state = create_initial_state(user_query="SOP Retur Barang")
+            state["query_mode"] = "vector_rag"
+            state["rag_query"] = "SOP Retur Barang"
+            res = await rag_node(state, client=None)
+            self.assertEqual(res["verification_status"], "EMPTY")
+            mock_instance.aclose.assert_awaited_once()
+
+    async def test_rag_node_injected_client_not_closed(self):
+        """rag_node must NOT await aclose() when client is externally injected."""
+        mock_instance = MagicMock(spec=DjangoCoreClient)
+        mock_instance.fetch_knowledge = AsyncMock(return_value={"chunks": []})
+        mock_instance.aclose = AsyncMock()
+
+        with patch.object(settings, "ENABLE_RAG", True):
+            state = create_initial_state(user_query="SOP Retur Barang")
+            state["query_mode"] = "vector_rag"
+            state["rag_query"] = "SOP Retur Barang"
+            res = await rag_node(state, client=mock_instance)
+            self.assertEqual(res["verification_status"], "EMPTY")
+            mock_instance.aclose.assert_not_called()
 
 
 if __name__ == "__main__":

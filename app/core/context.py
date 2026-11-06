@@ -97,8 +97,8 @@ def sanitize_erp_payload(data: Any, max_records: int = 50) -> Any:
             # 3. Recursively sanitize nested structures
             if isinstance(value, (dict, list)):
                 cleaned_val = sanitize_erp_payload(value, max_records=max_records)
-                # Keep calculations and summary blocks even if small
-                if cleaned_val or key in ("calculations", "summary", "totals"):
+                # Keep calculations, summary, and explicitly track collection keys even if empty
+                if cleaned_val or key in ("calculations", "summary", "totals", "accounts", "entries", "lines", "items", "products"):
                     sanitized_dict[key] = cleaned_val
             else:
                 sanitized_dict[key] = value
