@@ -271,26 +271,49 @@ def _fallback_extract_stock_level(
         params["code"] = tokens[0]
         return params
 
-    if any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang", "coba lagi", "ulang", "retry")) and history:
-        for prev_msg in reversed(history):
+    is_referential = (
+        has_anaphoric_reference(cleaned)
+        or any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang", "coba lagi", "ulang", "retry"))
+    )
+    if is_referential and history:
+        prior_msgs = history[:-1] if (len(history) > 1 and cleaned.lower() in getattr(history[-1], "content", "").lower()) else history
+        for prev_msg in reversed(prior_msgs):
             content = getattr(prev_msg, "content", "") or ""
             prev_tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{3,8})\b", content)
             if prev_tokens:
-                params["code"] = prev_tokens[0]
+                params["code"] = prev_tokens[0].rstrip(".")
+                break
+            prev_info = _fallback_extract_product_info(content)
+            if prev_info.get("search") and not is_vendor_name(prev_info["search"]) and not is_account_code_or_name(prev_info["search"]) and not is_accounting_term(prev_info["search"]):
+                params["code"] = prev_info["search"]
                 break
 
     return params
 
 
+LOCATION_STOPWORDS = (
+    "gudang", "lokasi", "warehouse",
+    "apa", "saja", "semua", "yang", "ada", "aktif", "ini", "itu", "daftar", "list",
+    "cek", "info", "mana", "cari",
+)
+
+
 def _fallback_extract_locations(query: str) -> Dict[str, Any]:
     """Deterministic heuristic extraction for inventory location inquiries."""
     params: Dict[str, Any] = {}
-    cleaned = query.strip()
-    match = re.search(r"(?:gudang|lokasi|warehouse)\s+([A-Za-z0-9\_\-]+)", cleaned, re.IGNORECASE)
+    cleaned = re.sub(r"[^\w\)]+$", "", (query or "").strip(), flags=re.UNICODE).strip()
+    match = re.search(
+        r"(?:(?:gudang|lokasi|warehouse)\s+)+([A-Za-z0-9\_\-\s]+?)(?:\s+(?:aktif|semua|yang|ini|itu|di|pada)|$)",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if not match:
+        match = re.search(r"(?:(?:gudang|lokasi|warehouse)\s+)+([A-Za-z0-9\_\-]+)", cleaned, re.IGNORECASE)
     if match:
-        token = match.group(1).strip()
-        if token.lower() not in ("apa", "saja", "semua", "yang", "ada", "aktif", "ini", "itu", "daftar", "list"):
-            params["search"] = token
+        token = match.group(1).strip().rstrip("?!.,; ")
+        words = [w for w in token.split() if w.lower() not in LOCATION_STOPWORDS]
+        if words:
+            params["search"] = " ".join(words)
     return params
 
 
@@ -331,12 +354,21 @@ def _fallback_extract_product_info(
                 params["search"] = candidate
                 return params
 
-    if any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang", "coba lagi", "ulang", "retry")) and history:
-        for prev_msg in reversed(history):
+    is_referential = (
+        has_anaphoric_reference(cleaned)
+        or any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang", "coba lagi", "ulang", "retry"))
+    )
+    if is_referential and history:
+        prior_msgs = history[:-1] if (len(history) > 1 and cleaned.lower() in getattr(history[-1], "content", "").lower()) else history
+        for prev_msg in reversed(prior_msgs):
             content = getattr(prev_msg, "content", "") or ""
             prev_tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{4,8})\b", content)
             if prev_tokens:
-                params["code"] = prev_tokens[0]
+                params["code"] = prev_tokens[0].rstrip(".")
+                break
+            prev_info = _fallback_extract_product_info(content)
+            if prev_info.get("search") and not is_vendor_name(prev_info["search"]) and not is_account_code_or_name(prev_info["search"]) and not is_accounting_term(prev_info["search"]):
+                params["search"] = prev_info["search"]
                 break
 
     return params

@@ -198,12 +198,8 @@ class TestMultiToolEllipsisAndAnaphora(unittest.TestCase):
         self.assertEqual(active[1]["params"].get("location_name"), "utama")
         self.assertEqual(active[2]["params"].get("search"), "Art Paper")
 
-    @unittest.expectedFailure
     def test_ellipsis_from_chat_history_with_accounting_tool(self):
-        """DEFECT 4: Anaphoric clitic '-nya' ('stoknya') fails to trigger history inspection.
-        Lines 262/322 only check ('itu', 'tersebut', 'tadi', 'produk', 'barang', 'coba lagi', 'ulang', 'retry'),
-        omitting 'nya' and ANAPHORIC_CLITICS ('stoknya', 'harganya').
-        """
+        """DEFECT 4 (RESOLVED): Anaphoric clitic '-nya' ('stoknya') triggers history inspection via has_anaphoric_reference."""
         history_msgs = [
             HumanMessage(content="Cek produk AAEO-NPKG"),
             AIMessage(content="Produk AAEO-NPKG adalah Kertas Glossy A4."),
@@ -336,11 +332,8 @@ class TestCrossModuleParameterExtraction(unittest.TestCase):
         self.assertEqual(active[1]["params"].get("date_from"), "2026-11-03")
         self.assertEqual(active[1]["params"].get("date_to"), "2026-11-03")
 
-    @unittest.expectedFailure
     def test_journal_entries_and_locations(self):
-        """DEFECT 3: _fallback_extract_locations captures 'gudang' from 'lokasi gudang utama'
-        instead of 'utama' because 'gudang' is matched by ([A-Za-z0-9\\-_\\-]+).
-        """
+        """DEFECT 3 (RESOLVED): _fallback_extract_locations extracts 'utama' from 'lokasi gudang utama'."""
         state = create_initial_state("Cek jurnal JE/2026/005 status draft dan lokasi gudang utama")
         state["is_multi_tool"] = True
         state["active_tools"] = [
