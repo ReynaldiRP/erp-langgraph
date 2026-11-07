@@ -207,6 +207,34 @@ class TestSynthesizerNodeExecution(unittest.TestCase):
         update = synthesizer_node(state, llm=mock_llm)
         self.assertEqual(update["final_answer"], "Laporan tagihan vendor berhasil diringkas oleh AI.")
 
+    def test_format_no_previous_query_to_retry(self):
+        """Empty history retry displays specific helpful guidance instead of generic greeting."""
+        state = create_initial_state(user_query="coba lagi")
+        state["detected_domain"] = "general"
+        state["detected_tool"] = None
+        state["error_message"] = "NO_PREVIOUS_QUERY_TO_RETRY"
+
+        output = format_deterministic_answer(state)
+        self.assertIn("Tidak Ada Permintaan Sebelumnya", output)
+        self.assertIn("Belum ada riwayat transaksi atau pertanyaan sebelumnya", output)
+
+    def test_retry_callout_header_prefixed_to_answer(self):
+        """Synthesizer node prepends retry callout header when retry_instruction is set."""
+        state = create_initial_state(user_query="coba lagi")
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+        state["verification_status"] = "VALID"
+        state["retry_instruction"] = "Mengulang permintaan: Cek stok Art Paper 150g"
+        state["tool_result"] = [{
+            "code": "AP-150",
+            "name": "Art Paper 150g",
+            "qty_on_hand": 50.0,
+        }]
+
+        update = synthesizer_node(state)
+        self.assertIn("> 🔄 **Mengulang permintaan: Cek stok Art Paper 150g**", update["final_answer"])
+        self.assertIn("AP-150", update["final_answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

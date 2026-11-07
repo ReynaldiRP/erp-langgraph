@@ -33,10 +33,13 @@ def decide_after_router(state: AgentState) -> str:
     Routing rules:
     - If query_mode is 'vector_rag' or domain is 'knowledge':
       Routes directly to 'rag_node' for semantic document retrieval.
-    - If domain is 'general' or no tool was matched:
+    - If domain is 'general' or 'out_of_scope':
       Routes directly to 'synthesizer' to provide general guidance or explain guardrails.
-    - If a specific ERP tool is detected and domain is 'accounting' / 'inventory':
-      Routes to 'extractor' to parse query entities and dates.
+    - If active_tools contains planned tool calls or legacy detected_tool is set
+      for accounting/inventory:
+      Routes to 'extractor' to parse query entities and dates (supports multi-tool & single-tool).
+    - Otherwise (no tools matched or unrecognized domain):
+      Routes directly to 'synthesizer'.
 
     Args:
         state: Current AgentState.
@@ -47,16 +50,24 @@ def decide_after_router(state: AgentState) -> str:
     query_mode = state.get("query_mode")
     detected_tool = state.get("detected_tool")
     detected_domain = state.get("detected_domain")
+    active_tools = state.get("active_tools") or []
 
-    # Vector RAG route for SOPs, specs, and qualitative knowledge
+    # 1. Vector RAG route for SOPs, specs, and qualitative knowledge
     if query_mode == "vector_rag" or detected_domain == "knowledge":
         return "rag_node"
 
-    # Guardrail: general & out_of_scope domain inquiries NEVER invoke tool extraction
-    if detected_domain in ("general", "out_of_scope") or not detected_tool:
+    # 2. Guardrail: general & out_of_scope inquiries NEVER invoke tool extraction
+    if detected_domain in ("general", "out_of_scope"):
         return "synthesizer"
 
-    if detected_tool and detected_domain in ("accounting", "inventory"):
+    # 3. Active ERP tools check (supporting multi-tool active_tools & scalar detected_tool)
+    has_active_tools = any(
+        isinstance(tool_call, dict) and bool(tool_call.get("tool"))
+        for tool_call in active_tools
+    )
+    has_scalar_tool = bool(detected_tool) and detected_domain in ("accounting", "inventory")
+
+    if has_active_tools or has_scalar_tool:
         return "extractor"
 
     return "synthesizer"

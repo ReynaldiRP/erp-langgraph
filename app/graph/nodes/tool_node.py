@@ -6,7 +6,7 @@ graceful error capture, and preserves transaction data and calculations block in
 import asyncio
 import concurrent.futures
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
 from app.core.context import sanitize_erp_payload
@@ -19,45 +19,81 @@ from app.services.django_client import (
 logger = logging.getLogger("tool_node")
 
 
+async def _execute_single_tool(
+    tool_name: str,
+    params: Dict[str, Any],
+    erp_client: DjangoCoreClient,
+    user_token: Optional[str],
+    default_company_id: Optional[int],
+    dispatch_map: Dict[str, Any],
+) -> Tuple[Any, Optional[str]]:
+    """Execute a single ERP tool, handling parameter adaptation, location resolution, and error capturing."""
+    clean_params = dict(params or {})
+    target_company_id = clean_params.get("company_id") or default_company_id
+
+    # Adapt parameters for vendor invoices/journal entries
+    if tool_name in ("fetch_vendor_invoices", "get_journal_entries"):
+        if "vendor_name" in clean_params and "search" not in clean_params:
+            clean_params["search"] = clean_params["vendor_name"]
+
+    # Pre-lookup for stock location_name -> location_id
+    if tool_name == "get_stock_level" and clean_params.get("location_name") and not clean_params.get("location_id"):
+        try:
+            loc_res = await erp_client.fetch_locations(
+                params={"search": clean_params["location_name"]},
+                user_token=user_token,
+                company_id=target_company_id,
+            )
+            locations = loc_res.get("locations", []) if isinstance(loc_res, dict) else (loc_res if isinstance(loc_res, list) else [])
+            if locations:
+                matched_loc = locations[0]
+                clean_params["location_id"] = matched_loc.get("id")
+                clean_params["matched_location_name"] = matched_loc.get("name")
+        except Exception as loc_err:
+            logger.warning(f"Could not resolve location_name '{clean_params.get('location_name')}': {loc_err}")
+
+    handler = dispatch_map.get(tool_name)
+    if not handler:
+        return None, f"Tool '{tool_name}' not registered in dispatch map"
+
+    raw_result = await handler(
+        params=clean_params,
+        user_token=user_token,
+        company_id=target_company_id,
+    )
+
+    if isinstance(raw_result, dict):
+        loc_label = clean_params.get("matched_location_name") or clean_params.get("location_name")
+        if loc_label and not raw_result.get("location_name"):
+            raw_result["location_name"] = loc_label
+
+    final_result = (
+        sanitize_erp_payload(raw_result)
+        if settings.ENABLE_PAYLOAD_SANITIZATION
+        else raw_result
+    )
+    return final_result, None
+
+
 async def tool_node(
     state: AgentState,
     client: Optional[DjangoCoreClient] = None,
 ) -> Dict[str, Any]:
     """
     Asynchronous LangGraph node that executes ERP tools based on state parameters and routing.
+    Supports both single-tool legacy workflows and concurrent multi-tool subagent execution (Milestone 3).
 
     Definition of Done:
     - Passes user_token and company_id to Django Core.
-    - Preserves transaction data and the calculations block intact in state['tool_result'].
+    - Preserves transaction data and the calculations block intact in state['tool_result'] and state['multi_tool_results'].
+    - Concurrently executes multi-tool plans via asyncio.gather while isolating individual failures.
     - Captures errors gracefully into state['error_message'] and sets verification_status='ERROR'.
-
-    Args:
-        state: Current AgentState containing extracted_params, user_token, company_id, etc.
-        client: Optional DjangoCoreClient instance (if None, initializes default client).
-
-    Returns:
-        Partial AgentState update dictionary with:
-            - tool_result: Complete response dictionary from ERP (or None if error)
-            - verification_status: 'VALID' on success, 'ERROR' on failure
-            - error_message: Error string if an exception occurred, else None
     """
-    extracted_params = dict(state.get("extracted_params") or {})
     user_token = state.get("user_token")
-    detected_tool = state.get("detected_tool") or "fetch_vendor_invoices"
-
-    # Multi-Company Scoping Priority:
-    # Query-extracted company_id takes precedence over active session state company_id
-    target_company_id = extracted_params.get("company_id") or state.get("company_id")
-
     own_client = client is None
     erp_client = client or DjangoCoreClient()
 
     try:
-        # Adapt parameters for vendor invoices: map vendor_name to search if search is unset
-        if detected_tool in ("fetch_vendor_invoices", "get_journal_entries"):
-            if "vendor_name" in extracted_params and "search" not in extracted_params:
-                extracted_params["search"] = extracted_params["vendor_name"]
-
         # Dynamic Tool Dispatch Registry
         dispatch_map = {
             "fetch_vendor_invoices": erp_client.fetch_vendor_invoices,
@@ -68,60 +104,115 @@ async def tool_node(
             "get_locations": erp_client.fetch_locations,
         }
 
-        # Sequential 2-Step Execution: If checking stock level with location_name, resolve location_id first!
-        if detected_tool == "get_stock_level" and extracted_params.get("location_name") and not extracted_params.get("location_id"):
-            try:
-                loc_res = await erp_client.fetch_locations(
-                    params={"search": extracted_params["location_name"]},
+        active_tools = state.get("active_tools")
+        is_multi_tool = state.get("is_multi_tool") or (bool(active_tools) and len(active_tools) > 1)
+
+        # ------------------------------------------------------------------
+        # Path A: Multi-Tool Execution via asyncio.gather (Milestone 3)
+        # ------------------------------------------------------------------
+        if is_multi_tool and active_tools:
+            tasks = [
+                _execute_single_tool(
+                    tool_name=plan.get("tool", "fetch_vendor_invoices"),
+                    params=plan.get("params") or {},
+                    erp_client=erp_client,
                     user_token=user_token,
-                    company_id=target_company_id,
+                    default_company_id=state.get("company_id"),
+                    dispatch_map=dispatch_map,
                 )
-                locations = loc_res.get("locations", []) if isinstance(loc_res, dict) else (loc_res if isinstance(loc_res, list) else [])
-                if locations:
-                    matched_loc = locations[0]
-                    extracted_params["location_id"] = matched_loc.get("id")
-                    extracted_params["matched_location_name"] = matched_loc.get("name")
-            except Exception as loc_err:
-                logger.warning(f"Could not resolve location_name '{extracted_params.get('location_name')}': {loc_err}")
+                for plan in active_tools
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        handler = dispatch_map.get(detected_tool, erp_client.fetch_vendor_invoices)
-        raw_result = await handler(
+            multi_tool_results: Dict[str, Any] = {}
+            multi_verification_status: Dict[str, str] = {}
+            updated_active_tools: List[Dict[str, Any]] = []
+            errors: List[str] = []
+
+            for plan, res in zip(active_tools, results):
+                p_copy = dict(plan)
+                t_name = p_copy.get("tool", "unnamed_tool")
+                if isinstance(res, Exception):
+                    err_msg = str(res)
+                    multi_tool_results[t_name] = None
+                    multi_verification_status[t_name] = "ERROR"
+                    p_copy["status"] = "error"
+                    errors.append(f"{t_name}: {err_msg}")
+                else:
+                    final_res, err = res
+                    if err:
+                        multi_tool_results[t_name] = None
+                        multi_verification_status[t_name] = "ERROR"
+                        p_copy["status"] = "error"
+                        errors.append(f"{t_name}: {err}")
+                    else:
+                        multi_tool_results[t_name] = final_res
+                        multi_verification_status[t_name] = "VALID"
+                        p_copy["status"] = "success"
+                updated_active_tools.append(p_copy)
+
+            primary_tool = state.get("detected_tool") or active_tools[0].get("tool", "fetch_vendor_invoices")
+            primary_result = multi_tool_results.get(primary_tool)
+
+            has_success = any(st == "VALID" for st in multi_verification_status.values())
+            all_failed = not has_success and len(multi_verification_status) > 0
+
+            return {
+                "active_tools": updated_active_tools,
+                "multi_tool_results": multi_tool_results,
+                "multi_verification_status": multi_verification_status,
+                "tool_result": primary_result,
+                "verification_status": "ERROR" if all_failed else "VALID",
+                "error_message": "; ".join(errors) if all_failed else (errors[0] if errors else None),
+            }
+
+        # ------------------------------------------------------------------
+        # Path B: Single-Tool Legacy Execution (Full Backward Compatibility)
+        # ------------------------------------------------------------------
+        extracted_params = dict(state.get("extracted_params") or {})
+        detected_tool = state.get("detected_tool") or "fetch_vendor_invoices"
+        target_company_id = extracted_params.get("company_id") or state.get("company_id")
+
+        final_tool_result, err = await _execute_single_tool(
+            tool_name=detected_tool,
             params=extracted_params,
+            erp_client=erp_client,
             user_token=user_token,
-            company_id=target_company_id,
+            default_company_id=target_company_id,
+            dispatch_map=dispatch_map,
         )
 
-        # Attach resolved location_name to raw_result if applicable
-        if isinstance(raw_result, dict):
-            loc_label = extracted_params.get("matched_location_name") or extracted_params.get("location_name")
-            if loc_label and not raw_result.get("location_name"):
-                raw_result["location_name"] = loc_label
+        if err:
+            return {
+                "tool_result": None,
+                "multi_tool_results": {detected_tool: None},
+                "verification_status": "ERROR",
+                "error_message": err,
+            }
 
-        # Context Pruning: Sanitize technical Django metadata if enabled
-        final_tool_result = (
-            sanitize_erp_payload(raw_result)
-            if settings.ENABLE_PAYLOAD_SANITIZATION
-            else raw_result
-        )
-
-        # Store pruned and verified response data intact into tool_result (DoD)
         return {
             "tool_result": final_tool_result,
+            "multi_tool_results": {detected_tool: final_tool_result},
+            "multi_verification_status": {detected_tool: "VALID"},
             "verification_status": "VALID",
             "error_message": None,
         }
 
     except DjangoCoreClientError as err:
-        logger.warning(f"DjangoCoreClientError in tool_node for tool '{detected_tool}': {err}")
+        det_tool = state.get("detected_tool") or "fetch_vendor_invoices"
+        logger.warning(f"DjangoCoreClientError in tool_node for tool '{det_tool}': {err}")
         return {
             "tool_result": None,
+            "multi_tool_results": {det_tool: None},
             "verification_status": "ERROR",
             "error_message": str(err),
         }
     except Exception as exc:
-        logger.error(f"Unexpected error in tool_node for tool '{detected_tool}': {exc}", exc_info=True)
+        det_tool = state.get("detected_tool") or "fetch_vendor_invoices"
+        logger.error(f"Unexpected error in tool_node for tool '{det_tool}': {exc}", exc_info=True)
         return {
             "tool_result": None,
+            "multi_tool_results": {det_tool: None},
             "verification_status": "ERROR",
             "error_message": f"Unexpected execution error: {str(exc)}",
         }

@@ -50,6 +50,122 @@ def _format_rag_section(
     return "\n".join(lines)
 
 
+def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> str:
+    """Format an individual tool's response payload into Markdown."""
+    if not tool or not tool_result:
+        return ""
+
+    lines: List[str] = []
+
+    # 1. Vendor Invoices / Journal Entries
+    if tool in ("fetch_vendor_invoices", "get_journal_entries"):
+        entries = tool_result.get("entries") or []
+        total_count = tool_result.get("total_count", len(entries))
+        calculations = tool_result.get("calculations") or {}
+
+        lines.append(f"### Laporan Transaksi Tagihan / Jurnal ({total_count} Catatan Ditemukan)\n")
+        if entries:
+            lines.append("| No | Nomor Dokumen | Tanggal | Rekanan / Vendor | Total Debit | Status |")
+            lines.append("|:---|:---|:---|:---|:---|:---|")
+            for idx, item in enumerate(entries, start=1):
+                num = item.get("number") or item.get("entry_number") or "-"
+                tgl = item.get("date") or "-"
+                vendor = item.get("vendor_name") or item.get("journal_name") or "-"
+                debit = _format_rupiah(item.get("total_debit", 0.0))
+                st = item.get("status") or item.get("state") or "posted"
+                lines.append(f"| {idx} | `{num}` | {tgl} | {vendor} | {debit} | {st.upper()} |")
+
+        # Summary calculations block (DoD TASK-4.3 preservation)
+        if calculations:
+            lines.append("\n#### Ringkasan Kalkulasi Total:")
+            if "total_unpaid" in calculations:
+                lines.append(f"- **Total Belum Dibayar**: {_format_rupiah(calculations['total_unpaid'])}")
+            if "total_paid" in calculations:
+                lines.append(f"- **Total Sudah Dibayar**: {_format_rupiah(calculations['total_paid'])}")
+            if "grand_total" in calculations:
+                lines.append(f"- **Grand Total Tagihan**: {_format_rupiah(calculations['grand_total'])}")
+        return "\n".join(lines)
+
+    # 2. Account Balance
+    if tool == "get_account_balance":
+        accounts = tool_result.get("accounts") or []
+        lines.append("### Informasi Saldo Chart of Account (Accounting Balance)\n")
+        if accounts:
+            lines.append("| Kode Akun | Nama Akun | Total Debit | Total Kredit | Saldo Bersih | Posisi |")
+            lines.append("|:---|:---|:---|:---|:---|:---|")
+            for acc in accounts:
+                code = acc.get("account_code") or "-"
+                name = acc.get("account_name") or "-"
+                deb = _format_rupiah(acc.get("total_debit", 0.0))
+                kred = _format_rupiah(acc.get("total_credit", 0.0))
+                net = _format_rupiah(acc.get("net_balance", 0.0))
+                pos = acc.get("balance_position") or "DEBIT"
+                lines.append(f"| `{code}` | {name} | {deb} | {kred} | **{net}** | {pos} |")
+        else:
+            net = _format_rupiah(tool_result.get("net_balance", 0.0))
+            deb = _format_rupiah(tool_result.get("total_debit", 0.0))
+            kred = _format_rupiah(tool_result.get("total_credit", 0.0))
+            lines.append(f"- **Total Debit**: {deb}")
+            lines.append(f"- **Total Kredit**: {kred}")
+            lines.append(f"- **Saldo Bersih**: **{net}**")
+        return "\n".join(lines)
+
+    # 3. Stock Level
+    if tool == "get_stock_level":
+        lines.append("### Informasi Ketersediaan Stok Barang (Inventory)\n")
+        if isinstance(tool_result, list):
+            items = tool_result
+        else:
+            items = [tool_result]
+
+        lines.append("| SKU / Kode | Nama Produk | Perusahaan | Lokasi / Gudang | Qty Fisik |")
+        lines.append("|:---|:---|:---|:---|:---|")
+        for st_item in items:
+            code = st_item.get("code") or st_item.get("sku") or "-"
+            name = st_item.get("name") or st_item.get("product_name") or "-"
+            comp = st_item.get("company_name") or f"Company #{st_item.get('company_id', 1)}"
+            loc = st_item.get("location_name") or (f"Location #{st_item.get('location_id')}" if st_item.get("location_id") else "Semua Lokasi")
+            qty = st_item.get("qty_on_hand") or st_item.get("quantity") or 0.0
+            lines.append(f"| `{code}` | {name} | {comp} | {loc} | **{qty} unit** |")
+        return "\n".join(lines)
+
+    # 4. Product Info
+    if tool == "get_product_info":
+        lines.append("### Informasi Master Produk (Catalog)\n")
+        products = tool_result.get("products") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        if products:
+            for p in products:
+                lines.append(f"- **Nama Produk**: {p.get('name', '-')}")
+                lines.append(f"  - Kode / SKU: `{p.get('code') or p.get('sku', '-')}`")
+                if "price" in p or "sales_price" in p:
+                    lines.append(f"  - Harga Jual: {_format_rupiah(p.get('price') or p.get('sales_price', 0.0))}")
+        return "\n".join(lines)
+
+    # 5. Locations
+    if tool == "get_locations":
+        locs = tool_result.get("locations") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_found = tool_result.get("total_found", len(locs)) if isinstance(tool_result, dict) else len(locs)
+        lines.append(f"### Informasi Daftar Lokasi & Gudang ({total_found} Lokasi Ditemukan)\n")
+        if locs:
+            lines.append("| ID | Nama Lokasi | Gudang Induk | Tipe | Kategori |")
+            lines.append("|:---|:---|:---|:---|:---|")
+            for l in locs:
+                lid = l.get("id", "-")
+                lname = l.get("name", "-")
+                wh = l.get("warehouse_name") or "-"
+                ltype = (l.get("type") or "-").capitalize()
+                lcat = (l.get("category") or "-").capitalize()
+                lines.append(f"| `{lid}` | {lname} | {wh} | {ltype} | {lcat} |")
+        return "\n".join(lines)
+
+    # Default fallback
+    return f"Hasil eksekusi data ERP: {str(tool_result)}"
+
+
 def format_deterministic_answer(state: AgentState) -> str:
     """
     Deterministic template formatter for ERP results when offline or LLM is unavailable.
@@ -61,6 +177,21 @@ def format_deterministic_answer(state: AgentState) -> str:
     tool_result = state.get("tool_result") or {}
     user_query = state.get("user_query") or ""
     error_message = state.get("error_message")
+    multi_results = state.get("multi_tool_results") or {}
+    is_multi = state.get("is_multi_tool") or (len(multi_results) > 1)
+
+    # 0. Empty History Retry Handling
+    if error_message == "NO_PREVIOUS_QUERY_TO_RETRY":
+        return (
+            "### Tidak Ada Permintaan Sebelumnya\n\n"
+            "Belum ada riwayat transaksi atau pertanyaan sebelumnya pada sesi percakapan ini untuk diulangi.\n\n"
+            "Silakan sampaikan pertanyaan spesifik Anda seputar data FastPrint ERP:\n"
+            "- **Tagihan Vendor / Pemasok** (Hutang usaha & status verifikasi faktur)\n"
+            "- **Saldo Akun Buku Kas & Neraca** (Accounting Balance & Kas Kecil)\n"
+            "- **Entri Jurnal Umum** (General Journal Entries)\n"
+            "- **Stok Barang & Master Produk** (Inventory & Kuantitas Gudang)\n"
+            "- **Pengetahuan & SOP Perusahaan** (SOP Retur, Kebijakan, dan Spesifikasi Teknis)"
+        )
 
     # 1. Error Status Handling
     if status == "ERROR":
@@ -117,7 +248,7 @@ def format_deterministic_answer(state: AgentState) -> str:
         return _format_rag_section(rag_context, rag_sources)
 
     # 3. General Domain / Guardrail Inquiries
-    if domain == "general" or not tool:
+    if (domain == "general" or not tool) and not is_multi:
         query_lower = user_query.lower()
         if any(term in query_lower for term in ("pelanggan", "customer", "piutang")):
             return (
@@ -161,116 +292,39 @@ def format_deterministic_answer(state: AgentState) -> str:
             f"- Silakan periksa kembali ketepatan nomor dokumen, nama vendor, atau pastikan periode transaksi telah tercatat di ERP."
         )
 
-    # 4. Valid Data Presentation
-    lines: List[str] = []
+    multi_results = state.get("multi_tool_results") or {}
+    is_multi = state.get("is_multi_tool") or (len(multi_results) > 1)
 
-    # 4.1 Vendor Invoices / Journal Entries
-    if tool in ("fetch_vendor_invoices", "get_journal_entries"):
-        entries = tool_result.get("entries") or []
-        total_count = tool_result.get("total_count", len(entries))
-        calculations = tool_result.get("calculations") or {}
+    # 4. Multi-Tool Execution Unified Formatting (Milestone 4)
+    if is_multi and multi_results:
+        sections: List[str] = []
+        active_tools = state.get("active_tools") or []
+        ordered_tools = [p.get("tool") for p in active_tools if p.get("tool")]
+        if not ordered_tools:
+            ordered_tools = list(multi_results.keys())
 
-        lines.append(f"### Laporan Transaksi Tagihan / Jurnal ({total_count} Catatan Ditemukan)\n")
-        if entries:
-            lines.append("| No | Nomor Dokumen | Tanggal | Rekanan / Vendor | Total Debit | Status |")
-            lines.append("|:---|:---|:---|:---|:---|:---|")
-            for idx, item in enumerate(entries, start=1):
-                num = item.get("number") or item.get("entry_number") or "-"
-                tgl = item.get("date") or "-"
-                vendor = item.get("vendor_name") or item.get("journal_name") or "-"
-                debit = _format_rupiah(item.get("total_debit", 0.0))
-                st = item.get("status") or item.get("state") or "posted"
-                lines.append(f"| {idx} | `{num}` | {tgl} | {vendor} | {debit} | {st.upper()} |")
+        for t_name in ordered_tools:
+            res = multi_results.get(t_name)
+            if res:
+                formatted = _format_single_tool_presentation(t_name, res)
+                if formatted:
+                    sections.append(formatted)
+            else:
+                domain_label = "Modul ERP"
+                if "stock" in t_name or "product" in t_name or "location" in t_name:
+                    domain_label = "Inventaris / Stok"
+                elif "balance" in t_name or "invoice" in t_name or "journal" in t_name:
+                    domain_label = "Akuntansi / Keuangan"
+                sections.append(
+                    f"### Informasi {domain_label} (`{t_name}`)\n\n"
+                    f"Tidak ditemukan data atau terjadi kendala saat memuat informasi untuk modul ini."
+                )
 
-        # Summary calculations block (DoD TASK-4.3 preservation)
-        if calculations:
-            lines.append("\n#### Ringkasan Kalkulasi Total:")
-            if "total_unpaid" in calculations:
-                lines.append(f"- **Total Belum Dibayar**: {_format_rupiah(calculations['total_unpaid'])}")
-            if "total_paid" in calculations:
-                lines.append(f"- **Total Sudah Dibayar**: {_format_rupiah(calculations['total_paid'])}")
-            if "grand_total" in calculations:
-                lines.append(f"- **Grand Total Tagihan**: {_format_rupiah(calculations['grand_total'])}")
-        return "\n".join(lines)
+        if sections:
+            return "\n\n---\n\n".join(sections)
 
-    # 4.2 Account Balance
-    if tool == "get_account_balance":
-        accounts = tool_result.get("accounts") or []
-        lines.append("### Informasi Saldo Chart of Account (Accounting Balance)\n")
-        if accounts:
-            lines.append("| Kode Akun | Nama Akun | Total Debit | Total Kredit | Saldo Bersih | Posisi |")
-            lines.append("|:---|:---|:---|:---|:---|:---|")
-            for acc in accounts:
-                code = acc.get("account_code") or "-"
-                name = acc.get("account_name") or "-"
-                deb = _format_rupiah(acc.get("total_debit", 0.0))
-                kred = _format_rupiah(acc.get("total_credit", 0.0))
-                net = _format_rupiah(acc.get("net_balance", 0.0))
-                pos = acc.get("balance_position") or "DEBIT"
-                lines.append(f"| `{code}` | {name} | {deb} | {kred} | **{net}** | {pos} |")
-        else:
-            net = _format_rupiah(tool_result.get("net_balance", 0.0))
-            deb = _format_rupiah(tool_result.get("total_debit", 0.0))
-            kred = _format_rupiah(tool_result.get("total_credit", 0.0))
-            lines.append(f"- **Total Debit**: {deb}")
-            lines.append(f"- **Total Kredit**: {kred}")
-            lines.append(f"- **Saldo Bersih**: **{net}**")
-        return "\n".join(lines)
-
-    # 4.3 Stock Level
-    if tool == "get_stock_level":
-        lines.append("### Informasi Ketersediaan Stok Barang (Inventory)\n")
-        if isinstance(tool_result, list):
-            items = tool_result
-        else:
-            items = [tool_result]
-
-        lines.append("| SKU / Kode | Nama Produk | Perusahaan | Lokasi / Gudang | Qty Fisik |")
-        lines.append("|:---|:---|:---|:---|:---|")
-        for st_item in items:
-            code = st_item.get("code") or st_item.get("sku") or "-"
-            name = st_item.get("name") or st_item.get("product_name") or "-"
-            comp = st_item.get("company_name") or f"Company #{st_item.get('company_id', 1)}"
-            loc = st_item.get("location_name") or (f"Location #{st_item.get('location_id')}" if st_item.get("location_id") else "Semua Lokasi")
-            qty = st_item.get("qty_on_hand") or st_item.get("quantity") or 0.0
-            lines.append(f"| `{code}` | {name} | {comp} | {loc} | **{qty} unit** |")
-        return "\n".join(lines)
-
-    # 4.4 Product Info
-    if tool == "get_product_info":
-        lines.append("### Informasi Master Produk (Catalog)\n")
-        products = tool_result.get("products") if isinstance(tool_result, dict) else (
-            tool_result if isinstance(tool_result, list) else [tool_result]
-        )
-        if products:
-            for p in products:
-                lines.append(f"- **Nama Produk**: {p.get('name', '-')}")
-                lines.append(f"  - Kode / SKU: `{p.get('code') or p.get('sku', '-')}`")
-                if "price" in p or "sales_price" in p:
-                    lines.append(f"  - Harga Jual: {_format_rupiah(p.get('price') or p.get('sales_price', 0.0))}")
-        return "\n".join(lines)
-
-    # 4.5 Locations
-    if tool == "get_locations":
-        locs = tool_result.get("locations") if isinstance(tool_result, dict) else (
-            tool_result if isinstance(tool_result, list) else [tool_result]
-        )
-        total_found = tool_result.get("total_found", len(locs)) if isinstance(tool_result, dict) else len(locs)
-        lines.append(f"### Informasi Daftar Lokasi & Gudang ({total_found} Lokasi Ditemukan)\n")
-        if locs:
-            lines.append("| ID | Nama Lokasi | Gudang Induk | Tipe | Kategori |")
-            lines.append("|:---|:---|:---|:---|:---|")
-            for l in locs:
-                lid = l.get("id", "-")
-                lname = l.get("name", "-")
-                wh = l.get("warehouse_name") or "-"
-                ltype = (l.get("type") or "-").capitalize()
-                lcat = (l.get("category") or "-").capitalize()
-                lines.append(f"| `{lid}` | {lname} | {wh} | {ltype} | {lcat} |")
-        return "\n".join(lines)
-
-    # Default fallback
-    return f"Hasil eksekusi data ERP: {str(tool_result)}"
+    # 5. Single-Tool Valid Data Presentation (Backward Compatibility)
+    return _format_single_tool_presentation(tool, tool_result)
 
 
 def synthesizer_node(
@@ -292,6 +346,12 @@ def synthesizer_node(
     user_query = state.get("user_query")
     status = state.get("verification_status")
     query_mode = state.get("query_mode")
+    retry_instruction = state.get("retry_instruction") or ""
+    retry_header = (
+        f"> 🔄 **{retry_instruction}**\n\n"
+        if retry_instruction.startswith("Mengulang permintaan:")
+        else ""
+    )
     deterministic_answer = format_deterministic_answer(state)
 
     # For hybrid inquiries, combine live ERP results with semantic RAG findings
@@ -338,6 +398,9 @@ def synthesizer_node(
         except Exception as exc:
             logger.warning(f"LLM synthesis failed, falling back to deterministic output: {exc}")
             final_text = deterministic_answer
+
+    if retry_header and not final_text.startswith("> 🔄"):
+        final_text = f"{retry_header}{final_text}"
 
     return {
         "final_answer": final_text,

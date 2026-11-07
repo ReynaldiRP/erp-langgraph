@@ -3,8 +3,10 @@ Asynchronous HTTP Client for FastPrint ERP Django Core (AI Tools Layer).
 Provides non-blocking async execution using httpx.AsyncClient with user token forwarding,
 structured error handling, and support for FastPrint ERP tools.
 """
+import asyncio
 import hashlib
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 import httpx
@@ -146,32 +148,49 @@ class DjangoCoreClient:
             "password": self.password,
         }
 
-        try:
-            resp = await self.client.post(url, json=payload, headers=headers)
-        except httpx.RequestError as exc:
-            raise DjangoCoreClientError(f"Network error during login to ERP: {exc}")
+        last_exc: Optional[Exception] = None
+        for attempt in range(2):
+            try:
+                resp = await self.client.post(url, json=payload, headers=headers)
+            except httpx.RequestError as exc:
+                last_exc = DjangoCoreClientError(f"Network error during login to ERP: {exc}")
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+                raise last_exc
 
-        if resp.status_code == 401 or resp.status_code == 403:
-            raise DjangoAuthError(
-                f"Authentication failed during ERP login (status {resp.status_code}): {resp.text}",
-                status_code=resp.status_code,
-                details=resp.text,
-            )
-        elif resp.status_code != 200:
-            raise DjangoCoreClientError(
-                f"Failed to authenticate with ERP (status {resp.status_code}): {resp.text}",
-                status_code=resp.status_code,
-                details=resp.text,
-            )
+            if resp.status_code in (401, 403):
+                raise DjangoAuthError(
+                    f"Authentication failed during ERP login (status {resp.status_code}): {resp.text}",
+                    status_code=resp.status_code,
+                    details=resp.text,
+                )
+            elif resp.status_code >= 500 and attempt == 0:
+                logger.warning(f"Transient HTTP {resp.status_code} during ERP login, retrying once...")
+                await asyncio.sleep(0.5)
+                continue
+            elif resp.status_code != 200:
+                error_text = resp.text or ""
+                if "<html" in error_text.lower():
+                    title_match = re.search(r"<title>(.*?)</title>", error_text, re.IGNORECASE | re.DOTALL)
+                    clean_msg = title_match.group(1).strip() if title_match else f"HTTP {resp.status_code} Error"
+                    clean_msg = " ".join(clean_msg.split())
+                else:
+                    clean_msg = error_text[:300]
+                raise DjangoCoreClientError(
+                    f"Failed to authenticate with ERP (status {resp.status_code}): {clean_msg}",
+                    status_code=resp.status_code,
+                    details=resp.text,
+                )
 
-        data = resp.json()
-        token = data.get("access")
-        if not token:
-            raise DjangoAuthError(f"No access token returned from ERP login response: {data}")
+            data = resp.json()
+            token = data.get("access")
+            if not token:
+                raise DjangoAuthError(f"No access token returned from ERP login response: {data}")
 
-        self.token = token
-        logger.info("Successfully acquired new JWT token from ERP via async login.")
-        return token
+            self.token = token
+            logger.info("Successfully acquired new JWT token from ERP via async login.")
+            return token
 
     async def _request(
         self,
@@ -264,8 +283,15 @@ class DjangoCoreClient:
             )
 
         if 500 <= resp.status_code < 600:
+            error_text = (resp.text or "").strip()
+            if "<html" in error_text.lower():
+                title_match = re.search(r"<title>(.*?)</title>", error_text, re.IGNORECASE | re.DOTALL)
+                clean_msg = title_match.group(1).strip() if title_match else f"HTTP {resp.status_code} Error"
+                clean_msg = " ".join(clean_msg.split())
+            else:
+                clean_msg = error_text or "Internal server error occurred on Django Core backend."
             raise DjangoServerError(
-                f"Internal Server Error ({resp.status_code}): {resp.text or 'Internal server error occurred on Django Core backend.'}",
+                f"Internal Server Error ({resp.status_code}): {clean_msg}",
                 status_code=resp.status_code,
                 details=resp.text,
             )

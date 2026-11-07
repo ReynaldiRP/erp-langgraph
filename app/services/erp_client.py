@@ -4,6 +4,8 @@ Handles authentication, token refresh, tool discovery, and tool execution.
 """
 import hashlib
 import logging
+import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import httpx
@@ -68,25 +70,40 @@ class ERPClient:
             "password": self.password,
         }
 
-        try:
-            resp = self.client.post(url, json=payload, headers=headers)
-        except httpx.RequestError as exc:
-            raise ERPClientError(f"Network error during login to ERP: {exc}")
+        for attempt in range(2):
+            try:
+                resp = self.client.post(url, json=payload, headers=headers)
+            except httpx.RequestError as exc:
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                raise ERPClientError(f"Network error during login to ERP: {exc}")
 
-        if resp.status_code != 200:
-            raise ERPClientError(
-                f"Failed to authenticate with ERP (status {resp.status_code}): {resp.text}",
-                status_code=resp.status_code,
-            )
+            if resp.status_code >= 500 and attempt == 0:
+                logger.warning(f"Transient HTTP {resp.status_code} during ERP login, retrying once...")
+                time.sleep(0.5)
+                continue
+            elif resp.status_code != 200:
+                error_text = resp.text or ""
+                if "<html" in error_text.lower():
+                    title_match = re.search(r"<title>(.*?)</title>", error_text, re.IGNORECASE | re.DOTALL)
+                    clean_msg = title_match.group(1).strip() if title_match else f"HTTP {resp.status_code} Error"
+                    clean_msg = " ".join(clean_msg.split())
+                else:
+                    clean_msg = error_text[:300]
+                raise ERPClientError(
+                    f"Failed to authenticate with ERP (status {resp.status_code}): {clean_msg}",
+                    status_code=resp.status_code,
+                )
 
-        data = resp.json()
-        token = data.get("access")
-        if not token:
-            raise ERPClientError(f"No access token returned from ERP login response: {data}")
+            data = resp.json()
+            token = data.get("access")
+            if not token:
+                raise ERPClientError(f"No access token returned from ERP login response: {data}")
 
-        self.token = token
-        logger.info("Successfully acquired new JWT token from ERP.")
-        return token
+            self.token = token
+            logger.info("Successfully acquired new JWT token from ERP.")
+            return token
 
     def _request(
         self,

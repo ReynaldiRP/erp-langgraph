@@ -13,6 +13,24 @@ VerificationStatus = Literal["VALID", "EMPTY", "RETRY", "ERROR"]
 QueryMode = Literal["live_erp", "vector_rag", "hybrid", "general", "out_of_scope"]
 
 
+class ToolCallPlan(TypedDict, total=False):
+    """
+    Subagent tool execution plan item for multi-tool / multi-intent orchestration.
+
+    Attributes:
+        tool: Specific ERP tool name (e.g., 'get_stock_level', 'get_account_balance').
+        domain: ERP domain classification ('inventory', 'accounting', etc.).
+        sub_query: Focused user query fragment for this subagent execution.
+        params: Extracted and validated parameter dictionary for the tool schema.
+        status: Execution lifecycle state ('pending', 'success', 'error').
+    """
+    tool: str
+    domain: str
+    sub_query: Optional[str]
+    params: Optional[Dict[str, Any]]
+    status: Optional[str]
+
+
 class AgentState(TypedDict, total=False):
     """
     Centralized LangGraph Agent State.
@@ -29,16 +47,22 @@ class AgentState(TypedDict, total=False):
     user_token: Optional[str]
     company_id: Optional[int]
 
-    # 3. Domain & Tool Routing
-    detected_domain: Optional[str]        # e.g., "accounting", "inventory"
-    detected_tool: Optional[str]          # e.g., "get_account_balance", "get_journal_entries"
-    extracted_params: Optional[Dict[str, Any]]
+    # 3. Domain & Tool Routing (Single & Multi-Tool)
+    detected_domain: Optional[str]        # Legacy/primary domain e.g., "accounting", "inventory"
+    detected_tool: Optional[str]          # Legacy/primary tool e.g., "get_account_balance"
+    extracted_params: Optional[Dict[str, Any]] # Legacy/primary tool parameters
+    is_multi_tool: Optional[bool]         # True if query spans multiple ERP intents/tools
+    detected_domains: Optional[List[str]] # List of all detected domains e.g. ["inventory", "accounting"]
+    detected_tools: Optional[List[str]]   # List of all detected tool names
+    active_tools: Optional[List[ToolCallPlan]] # Ordered list of subagent tool execution plans
 
     # 4. Tool Execution & Output Data
-    tool_result: Optional[Dict[str, Any]] # Raw data & calculations returned from ERP
+    tool_result: Optional[Dict[str, Any]] # Legacy/primary raw data & calculations returned from ERP
+    multi_tool_results: Optional[Dict[str, Any]] # Tool execution results mapped by tool_name
 
     # 5. Guardrail & Verification Cycle
-    verification_status: Optional[VerificationStatus] # "VALID", "EMPTY", "RETRY", "ERROR"
+    verification_status: Optional[VerificationStatus] # Aggregate status: "VALID", "EMPTY", "RETRY", "ERROR"
+    multi_verification_status: Optional[Dict[str, str]] # Per-tool verification status
     retry_count: int
     retry_instruction: Optional[str]
 
@@ -61,6 +85,7 @@ def create_initial_state(
     user_token: Optional[str] = None,
     company_id: Optional[int] = None,
     messages: Optional[List[BaseMessage]] = None,
+    is_multi_tool: Optional[bool] = False,
 ) -> AgentState:
     """
     Construct a clean initial AgentState dictionary with standard defaults.
@@ -70,6 +95,7 @@ def create_initial_state(
         user_token: Optional user JWT access token.
         company_id: Optional target company ID (defaults to settings.DEFAULT_COMPANY_ID).
         messages: Optional pre-existing message list (if None, initializes with HumanMessage).
+        is_multi_tool: Flag indicating if the state is initialized for multi-tool workflow.
 
     Returns:
         A fully initialized AgentState dictionary.
@@ -97,4 +123,11 @@ def create_initial_state(
         "rag_query": None,
         "rag_context": None,
         "rag_sources": None,
+        # Multi-tool orchestration state extensions
+        "is_multi_tool": is_multi_tool if is_multi_tool is not None else False,
+        "detected_domains": [],
+        "detected_tools": [],
+        "active_tools": [],
+        "multi_tool_results": {},
+        "multi_verification_status": {},
     }

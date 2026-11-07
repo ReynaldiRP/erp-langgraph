@@ -85,15 +85,92 @@ def verifier_node(state: AgentState) -> Dict[str, Any]:
         Partial AgentState update dictionary.
     """
     # 1. Preserve pre-existing ERROR status from tool_node
+    current_instruction = state.get("retry_instruction")
+    preserved_replay = current_instruction if current_instruction and current_instruction.startswith("Mengulang permintaan:") else None
+
     if state.get("verification_status") == "ERROR" or (
         state.get("error_message") and state.get("tool_result") is None
     ):
         logger.info("Preserving ERROR verification status from previous node failure.")
         return {
             "verification_status": "ERROR",
-            "retry_instruction": None,
+            "retry_instruction": preserved_replay,
         }
 
+    multi_results = state.get("multi_tool_results") or {}
+    is_multi = state.get("is_multi_tool") or (len(multi_results) > 1)
+
+    # ------------------------------------------------------------------
+    # Path A: Aggregate Verification for Multi-Tool Execution (Milestone 4)
+    # ------------------------------------------------------------------
+    if is_multi and multi_results:
+        per_tool_status: Dict[str, str] = {}
+        total_records = 0
+        has_empty_tool = False
+
+        for t_name, res in multi_results.items():
+            if res is None and state.get("error_message"):
+                per_tool_status[t_name] = "ERROR"
+            else:
+                cnt = _calculate_records_count(res)
+                total_records += cnt
+                if cnt > 0:
+                    per_tool_status[t_name] = "VALID"
+                else:
+                    per_tool_status[t_name] = "EMPTY"
+                    has_empty_tool = True
+
+        current_retry_count = int(state.get("retry_count") or 0)
+
+        # If all tools returned valid data
+        if not has_empty_tool and total_records > 0:
+            logger.info(f"Multi-tool verification successful: all {len(multi_results)} tools found records.")
+            return {
+                "verification_status": "VALID",
+                "multi_verification_status": per_tool_status,
+                "retry_instruction": preserved_replay,
+            }
+
+        # If any tool is empty and we have retry budget
+        if has_empty_tool and current_retry_count < 2:
+            next_retry = current_retry_count + 1
+            if next_retry == 1:
+                instruction = (
+                    "Sebagian atau seluruh query data ERP kosong (0 data). Longgarkan batasan filter tanggal "
+                    "(date_from / date_to) untuk memperluas pencarian transaksi."
+                )
+            else:
+                instruction = (
+                    "Hasil query masih kosong setelah pelonggaran tanggal. Hapus batasan pencarian "
+                    "kata kunci spesifik untuk memeriksa transaksi umum."
+                )
+            logger.warning(f"Multi-tool verification empty for some tools. Triggering RETRY {next_retry}/2.")
+            return {
+                "verification_status": "RETRY",
+                "multi_verification_status": per_tool_status,
+                "retry_count": next_retry,
+                "retry_instruction": instruction,
+            }
+
+        # If retries exhausted: return VALID if at least one tool succeeded, otherwise EMPTY
+        if total_records > 0:
+            logger.info("Multi-tool verification finished: partial data available after retries -> VALID.")
+            return {
+                "verification_status": "VALID",
+                "multi_verification_status": per_tool_status,
+                "retry_instruction": preserved_replay,
+            }
+
+        logger.info("Multi-tool verification finished: all tools empty and retry limit reached -> EMPTY.")
+        return {
+            "verification_status": "EMPTY",
+            "multi_verification_status": per_tool_status,
+            "retry_instruction": preserved_replay,
+        }
+
+    # ------------------------------------------------------------------
+    # Path B: Single-Tool Verification (Backward Compatibility)
+    # ------------------------------------------------------------------
     tool_result = state.get("tool_result")
     records_count = _calculate_records_count(tool_result)
     current_retry_count = int(state.get("retry_count") or 0)
@@ -103,7 +180,7 @@ def verifier_node(state: AgentState) -> Dict[str, Any]:
         logger.info(f"Verification successful: {records_count} record(s) found.")
         return {
             "verification_status": "VALID",
-            "retry_instruction": None,
+            "retry_instruction": preserved_replay,
         }
 
     # 3. Empty data with remaining retry budget (retry_count < 2)
@@ -133,7 +210,7 @@ def verifier_node(state: AgentState) -> Dict[str, Any]:
     logger.info("Verification finished: 0 records found and retry limit (2x) reached -> EMPTY.")
     return {
         "verification_status": "EMPTY",
-        "retry_instruction": None,
+        "retry_instruction": preserved_replay,
     }
 
 

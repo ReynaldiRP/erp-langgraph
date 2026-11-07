@@ -119,6 +119,56 @@ class TestDjangoCoreClientTokenAndHeaders(unittest.IsolatedAsyncioTestCase):
         headers = mock_async_client.request.call_args.kwargs["headers"]
         self.assertEqual(headers["Authorization"], "Bearer newly-acquired-jwt")
 
+    async def test_login_retry_on_transient_500_success(self):
+        """When login experiences transient 500, it retries once and acquires token."""
+        mock_async_client = MagicMock(spec=httpx.AsyncClient)
+        mock_async_client.is_closed = False
+
+        err_resp = MagicMock(spec=httpx.Response)
+        err_resp.status_code = 500
+        err_resp.text = "Internal Server Error"
+
+        ok_resp = MagicMock(spec=httpx.Response)
+        ok_resp.status_code = 200
+        ok_resp.json.return_value = {"access": "token-after-retry"}
+
+        mock_async_client.post = AsyncMock(side_effect=[err_resp, ok_resp])
+
+        client = DjangoCoreClient(
+            base_url="http://test-erp:8000",
+            username="admin",
+            password="secretpassword",
+            client=mock_async_client,
+        )
+
+        token = await client.login()
+        self.assertEqual(token, "token-after-retry")
+        self.assertEqual(mock_async_client.post.call_count, 2)
+
+    async def test_login_html_error_sanitization(self):
+        """When login receives an HTML debug page, it extracts clean title text."""
+        mock_async_client = MagicMock(spec=httpx.AsyncClient)
+        mock_async_client.is_closed = False
+
+        html_resp = MagicMock(spec=httpx.Response)
+        html_resp.status_code = 500
+        html_resp.text = "<!DOCTYPE html><html><head><title>ConnectionError at /external_api/get_token/</title></head><body>Error details</body></html>"
+
+        # Both attempts fail with the HTML error
+        mock_async_client.post = AsyncMock(return_value=html_resp)
+
+        client = DjangoCoreClient(
+            base_url="http://test-erp:8000",
+            username="admin",
+            password="secretpassword",
+            client=mock_async_client,
+        )
+
+        with self.assertRaises(DjangoCoreClientError) as ctx:
+            await client.login()
+        self.assertIn("ConnectionError at /external_api/get_token/", str(ctx.exception))
+        self.assertNotIn("<!DOCTYPE html>", str(ctx.exception))
+
 
 class TestStructuredErrorHandling(unittest.IsolatedAsyncioTestCase):
     """Test suite for HTTP status 401, 403, 404, 500 error mapping (DoD)."""

@@ -281,6 +281,55 @@ class TestWorkflowEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Main Store", result["final_answer"])
             self.assertIn("1.05 unit", result["final_answer"])
 
+    async def test_conversational_retry_replays_prior_query_flow(self):
+        """
+        Scenario 8: Conversational retry ('coba lagi') re-evaluates the prior substantive query,
+        replaying the pipeline through router -> extractor -> tool -> verifier -> synthesizer.
+        """
+        mock_client = MagicMock(spec=DjangoCoreClient)
+        mock_client.fetch_stock_level = AsyncMock(
+            return_value=[
+                {
+                    "code": "AAEO-NPKG",
+                    "name": "Art Paper 150g",
+                    "company_id": 3,
+                    "company_name": "FastPrint",
+                    "location_name": "Gudang Utama",
+                    "qty_on_hand": 10.0,
+                }
+            ]
+        )
+
+        with patch("app.graph.nodes.tool_node.DjangoCoreClient", return_value=mock_client):
+            graph = create_workflow_graph(checkpointer=MemorySaver())
+            thread_cfg = {"configurable": {"thread_id": "test_retry_thread_1"}}
+
+            # Turn 1: Initial query
+            state_1 = create_initial_state(user_query="Cek stok kertas AAEO-NPKG di gudang utama")
+            res_1 = await graph.ainvoke(state_1, config=thread_cfg)
+            self.assertEqual(res_1["detected_domain"], "inventory")
+            self.assertEqual(res_1["detected_tool"], "get_stock_level")
+            self.assertIn("AAEO-NPKG", res_1["final_answer"])
+
+            # Turn 2: User says 'coba lagi'
+            state_2 = create_initial_state(user_query="coba lagi")
+            res_2 = await graph.ainvoke(state_2, config=thread_cfg)
+
+            # Assert replay of prior inquiry
+            self.assertEqual(res_2["detected_domain"], "inventory")
+            self.assertEqual(res_2["detected_tool"], "get_stock_level")
+            self.assertEqual(res_2["user_query"], "Cek stok kertas AAEO-NPKG di gudang utama")
+            self.assertIn("> 🔄 **Mengulang permintaan: Cek stok kertas AAEO-NPKG di gudang utama**", res_2["final_answer"])
+            self.assertIn("AAEO-NPKG", res_2["final_answer"])
+
+            # Turn 3: User says 'coba lagi' on a fresh thread with no history
+            fresh_cfg = {"configurable": {"thread_id": "fresh_empty_retry_thread"}}
+            state_3 = create_initial_state(user_query="coba lagi")
+            res_3 = await graph.ainvoke(state_3, config=fresh_cfg)
+            self.assertEqual(res_3["detected_domain"], "general")
+            self.assertIsNone(res_3.get("detected_tool"))
+            self.assertIn("Tidak Ada Permintaan Sebelumnya", res_3["final_answer"])
+
 
 class TestSynchronousRunnerHelper(unittest.TestCase):
     """Test suite validating run_workflow_sync and arun_workflow wrappers."""

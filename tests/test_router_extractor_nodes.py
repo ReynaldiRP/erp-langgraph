@@ -280,6 +280,138 @@ class TestRouterNode(unittest.TestCase):
         self.assertEqual(result["detected_tool"], "get_account_balance")
         mock_llm.with_structured_output.assert_called_once()
 
+    def test_product_purchase_price_routes_to_product_info(self):
+        """
+        Regression test: Inquiries regarding product purchase price ('harga beli')
+        must route to inventory domain and get_product_info tool, NOT crash or trigger vendor invoices.
+        """
+        queries = [
+            "Berapa harga beli kertas foto?",
+            "Berapa harga beli Art Paper?",
+            "cek harga beli tinta sublim",
+            "info harga beli produk roll banner",
+        ]
+        for query in queries:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertEqual(result["detected_domain"], "inventory", f"Failed domain for '{query}'")
+            self.assertEqual(result["detected_tool"], "get_product_info", f"Failed tool for '{query}'")
+            self.assertFalse(result.get("is_multi_tool", False), f"Should not be multi-tool for '{query}'")
+            self.assertEqual(len(result.get("active_tools", [])), 1, f"Failed active_tools length for '{query}'")
+            self.assertEqual(result["active_tools"][0]["tool"], "get_product_info")
+            self.assertEqual(result["active_tools"][0]["domain"], "inventory")
+
+    def test_multi_intent_product_purchase_price_and_stock_level(self):
+        """
+        Regression test: Multi-intent queries asking for purchase price AND stock level
+        must detect both get_product_info and get_stock_level in active_tools.
+        """
+        query = "Berapa harga beli Art Paper dan berapa stoknya?"
+        state = create_initial_state(query)
+        result = router_node(state)
+
+        self.assertTrue(result.get("is_multi_tool"), "Must flag as multi-tool")
+        active_tools = result.get("active_tools", [])
+        self.assertEqual(len(active_tools), 2, f"Expected 2 planned tools, got {len(active_tools)}")
+
+        tools = [t["tool"] for t in active_tools]
+        self.assertEqual(tools, ["get_product_info", "get_stock_level"])
+        self.assertEqual(result["detected_tool"], "get_product_info")
+        self.assertEqual(result["detected_domain"], "inventory")
+        self.assertEqual(result["detected_domains"], ["inventory"])
+
+        # Check sub-queries split cleanly along Indonesian conjunction 'dan'
+        self.assertIn("harga beli", active_tools[0].get("sub_query", "").lower())
+        self.assertIn("stok", active_tools[1].get("sub_query", "").lower())
+
+    def test_multi_intent_stock_and_purchase_price_inverted_order(self):
+        """
+        Regression test: Inverted order query (stock first, then purchase price)
+        must preserve chronological tool order: get_stock_level first, then get_product_info.
+        """
+        query = "Cek stok kertas foto dan harga belinya"
+        state = create_initial_state(query)
+        result = router_node(state)
+
+        self.assertTrue(result.get("is_multi_tool"), "Must flag as multi-tool")
+        active_tools = result.get("active_tools", [])
+        self.assertEqual(len(active_tools), 2)
+
+        tools = [t["tool"] for t in active_tools]
+        self.assertEqual(tools, ["get_stock_level", "get_product_info"])
+        self.assertEqual(result["detected_tool"], "get_stock_level")
+        self.assertEqual(result["detected_domain"], "inventory")
+
+    def test_substring_beli_words_do_not_falsely_trigger_vendor_invoices(self):
+        """
+        Regression test: Indonesian words with substring 'beli' (e.g. 'belimbing')
+        must NOT trigger vendor invoice routing or crash min() empty sequence.
+        """
+        test_cases = [
+            ("stok buah belimbing", "get_stock_level", "inventory"),
+            ("cek stok belimbing wuluh di gudang", "get_stock_level", "inventory"),
+            ("berapa sisa stok sari buah belimbing", "get_stock_level", "inventory"),
+        ]
+        for query, expected_tool, expected_domain in test_cases:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertEqual(result["detected_domain"], expected_domain, f"Failed domain for '{query}'")
+            self.assertEqual(result["detected_tool"], expected_tool, f"Failed tool for '{query}'")
+            self.assertNotEqual(result.get("detected_tool"), "fetch_vendor_invoices", f"Should not match vendor invoices for '{query}'")
+
+    def test_purchasing_query_without_erp_tool_routes_safely(self):
+        """
+        Regression test: General purchasing inquiries without purchase order / vendor invoice context
+        must not crash and route safely to general domain without active tools.
+        """
+        queries = [
+            "pembelian bahan baku",
+            "bagaimana alur pembelian barang?",
+            "rencana pembelian perlengkapan",
+        ]
+        for query in queries:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertIn(result["detected_domain"], ["general", "knowledge", "out_of_scope"])
+            self.assertIsNone(result.get("detected_tool"))
+            self.assertEqual(result.get("active_tools", []), [])
+
+    def test_legitimate_vendor_invoice_queries_continue_to_match(self):
+        """
+        Regression test: Legitimate vendor invoice queries with combinations of vendor, supplier,
+        pemasok, tagihan, faktur, invoice, hutang must continue routing to fetch_vendor_invoices.
+        """
+        cases = [
+            ("Cek tagihan vendor PT Abadi", "accounting", "fetch_vendor_invoices"),
+            ("Faktur supplier CV Sumber Makmur", "accounting", "fetch_vendor_invoices"),
+            ("Tagihan dari pemasok PT Surya bulan ini", "accounting", "fetch_vendor_invoices"),
+            ("Hutang ke vendor Toko Kertas", "accounting", "fetch_vendor_invoices"),
+            ("Invoice vendor yang belum dibayar", "accounting", "fetch_vendor_invoices"),
+            ("daftar vendor supplier bahan baku", "accounting", "fetch_vendor_invoices"),
+            ("faktur pembelian vendor PT Surya", "accounting", "fetch_vendor_invoices"),
+            ("tagihan pembelian dari CV Makmur", "accounting", "fetch_vendor_invoices"),
+        ]
+        for query, expected_domain, expected_tool in cases:
+            state = create_initial_state(query)
+            result = router_node(state)
+            self.assertEqual(result["detected_domain"], expected_domain, f"Failed domain for '{query}'")
+            self.assertEqual(result["detected_tool"], expected_tool, f"Failed tool for '{query}'")
+            self.assertIn(expected_tool, [t["tool"] for t in result.get("active_tools", [])], f"Failed active_tools for '{query}'")
+
+    def test_router_node_exception_safety_guard(self):
+        """
+        Regression test: router_node must intercept unexpected exceptions from
+        classify_query_rule_based and gracefully return a safe fallback state.
+        """
+        from unittest.mock import patch
+
+        state = create_initial_state("Berapa saldo kas?")
+        with patch("app.graph.nodes.router.classify_query_rule_based", side_effect=ValueError("Simulated min() crash")):
+            result = router_node(state)
+            self.assertIsNotNone(result)
+            self.assertIn(result.get("detected_domain"), ["general", "out_of_scope", "accounting"])
+
+
 
 class TestExtractorNode(unittest.TestCase):
     """Test suite for extractor_node, registry, and date resolution."""
@@ -562,6 +694,510 @@ class TestLangGraphPipelineChain(unittest.TestCase):
         params = final_state.get("extracted_params", {})
         self.assertEqual(params.get("location_name"), "utama")
         self.assertIsNone(params.get("code"))
+
+    def test_is_retry_query_pattern_matching(self):
+        """Verify strict pattern matching for conversational retry phrases."""
+        from app.graph.nodes.router import is_retry_query
+        positive_queries = [
+            "coba lagi",
+            "tolong coba lagi",
+            "silakan coba lagi",
+            "coba lagi ya",
+            "coba lagi dong",
+            "ulang",
+            "ulangi",
+            "coba ulang",
+            "ulangi lagi",
+            "sekali lagi",
+            "coba sekali lagi",
+            "retry",
+            "tes lagi",
+            "mohon ulangi lagi dong",
+        ]
+        for q in positive_queries:
+            self.assertTrue(is_retry_query(q), f"Should match retry query: '{q}'")
+
+        negative_queries = [
+            "daur ulang",
+            "berapa kali diulang",
+            "proses daur ulang limbah",
+            "coba kasih tau system design mu",
+            "cek stok kertas foto A4",
+            "coba cek saldo kas",
+        ]
+        for q in negative_queries:
+            self.assertFalse(is_retry_query(q), f"Should NOT match retry query: '{q}'")
+
+    def test_find_previous_user_query(self):
+        """find_previous_user_query must locate the latest substantive HumanMessage."""
+        from langchain_core.messages import AIMessage, HumanMessage
+        from app.graph.nodes.router import find_previous_user_query
+
+        # Case 1: Standard previous message
+        msgs = [
+            HumanMessage(content="Cek stok kertas foto A4"),
+            AIMessage(content="Terjadi kendala akses data"),
+            HumanMessage(content="coba lagi"),
+        ]
+        self.assertEqual(find_previous_user_query(msgs), "Cek stok kertas foto A4")
+
+        # Case 2: Consecutive retries
+        msgs_consecutive = [
+            HumanMessage(content="Berapa saldo kas kecil saat ini?"),
+            AIMessage(content="Error"),
+            HumanMessage(content="coba lagi"),
+            AIMessage(content="Still error"),
+            HumanMessage(content="ulangi"),
+        ]
+        self.assertEqual(find_previous_user_query(msgs_consecutive), "Berapa saldo kas kecil saat ini?")
+
+        # Case 3: Empty or only retry
+        self.assertIsNone(find_previous_user_query([]))
+        self.assertIsNone(find_previous_user_query([HumanMessage(content="coba lagi")]))
+
+    def test_router_node_conversational_retry_flow(self):
+        """Router node must replay routing on prior query when 'coba lagi' is received."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        state = create_initial_state("coba lagi")
+        state["messages"] = [
+            HumanMessage(content="Cek stok kertas foto A4"),
+            AIMessage(content="Terjadi kendala akses data"),
+            HumanMessage(content="coba lagi"),
+        ]
+
+        result = router_node(state)
+        self.assertEqual(result["detected_domain"], "inventory")
+        self.assertEqual(result["detected_tool"], "get_stock_level")
+        self.assertEqual(result["user_query"], "Cek stok kertas foto A4")
+        self.assertIn("Mengulang permintaan:", result["retry_instruction"])
+
+    def test_router_node_retry_with_no_history(self):
+        """Router node with empty history and 'coba lagi' must route to general with NO_PREVIOUS_QUERY_TO_RETRY."""
+        state = create_initial_state("coba lagi")
+        result = router_node(state)
+        self.assertEqual(result["detected_domain"], "general")
+        self.assertIsNone(result.get("detected_tool"))
+        self.assertEqual(result.get("error_message"), "NO_PREVIOUS_QUERY_TO_RETRY")
+
+    def test_end_to_end_product_purchase_price_chain(self):
+        """
+        Pipeline integration: 'Berapa harga beli kertas foto?' routes through router -> extractor
+        without raising ValueError: min() arg is an empty sequence.
+        """
+        anchor_date = date(2026, 11, 4)
+
+        builder = StateGraph(AgentState)
+        builder.add_node("router", router_node)
+        builder.add_node("extractor", lambda s: extractor_node(s, ref_date=anchor_date))
+        builder.add_edge(START, "router")
+        builder.add_edge("router", "extractor")
+        builder.add_edge("extractor", END)
+        graph = builder.compile()
+
+        state = create_initial_state("Berapa harga beli kertas foto?")
+        final_state = graph.invoke(state)
+
+        self.assertEqual(final_state["detected_domain"], "inventory")
+        self.assertEqual(final_state["detected_tool"], "get_product_info")
+        self.assertIsNotNone(final_state.get("extracted_params"))
+
+    def test_end_to_end_multi_intent_purchase_price_and_stock_chain(self):
+        """
+        Pipeline integration: 'Berapa harga beli Art Paper dan berapa stoknya?' executes
+        through router -> extractor with dual active_tools populated.
+        """
+        anchor_date = date(2026, 11, 4)
+
+        builder = StateGraph(AgentState)
+        builder.add_node("router", router_node)
+        builder.add_node("extractor", lambda s: extractor_node(s, ref_date=anchor_date))
+        builder.add_edge(START, "router")
+        builder.add_edge("router", "extractor")
+        builder.add_edge("extractor", END)
+        graph = builder.compile()
+
+        state = create_initial_state("Berapa harga beli Art Paper dan berapa stoknya?")
+        final_state = graph.invoke(state)
+
+        self.assertTrue(final_state.get("is_multi_tool"))
+        self.assertEqual(len(final_state.get("active_tools", [])), 2)
+        tools = [t["tool"] for t in final_state["active_tools"]]
+        self.assertEqual(tools, ["get_product_info", "get_stock_level"])
+        self.assertEqual(final_state["active_tools"][0]["params"].get("search"), "Art Paper")
+        self.assertEqual(final_state["active_tools"][1]["params"].get("code"), "Art Paper")
+
+
+class TestMultiToolExtractorNode(unittest.TestCase):
+    """Test suite validating multi-tool parameter extraction, 3-tier entity resolution, and domain isolation (Milestone 2)."""
+
+    def setUp(self):
+        self.anchor_date = date(2026, 11, 4)
+
+    def test_single_tool_legacy_state_populates_active_tools_and_matches_scalar(self):
+        """When state has detected_tool and empty active_tools, extractor populates active_tools[0].params matching extracted_params."""
+        state = create_initial_state("Cek tagihan vendor PT Sumber Makmur bulan ini")
+        state["detected_domain"] = "accounting"
+        state["detected_tool"] = "fetch_vendor_invoices"
+        state["active_tools"] = []
+
+        result = extractor_node(state, ref_date=self.anchor_date)
+        extracted = result.get("extracted_params", {})
+        active = result.get("active_tools", [])
+
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["tool"], "fetch_vendor_invoices")
+        self.assertEqual(active[0]["domain"], "accounting")
+        self.assertEqual(active[0]["params"], extracted)
+        self.assertEqual(extracted.get("vendor_name"), "PT Sumber Makmur")
+        self.assertEqual(extracted.get("date_from"), "2026-11-01")
+        self.assertEqual(extracted.get("date_to"), "2026-11-30")
+
+    def test_single_tool_prepopulated_plan_extracted_consistently(self):
+        """When active_tools has 1 plan, extractor populates its params and synchronizes extracted_params."""
+        state = create_initial_state("Cek stok AAEO-NPKG")
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+        state["active_tools"] = [{
+            "tool": "get_stock_level",
+            "domain": "inventory",
+            "sub_query": "Cek stok AAEO-NPKG",
+            "params": {},
+            "status": "pending",
+        }]
+
+        result = extractor_node(state)
+        active = result.get("active_tools", [])
+        extracted = result.get("extracted_params", {})
+
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["params"], extracted)
+        self.assertEqual(active[0]["params"].get("code"), "AAEO-NPKG")
+
+    def test_no_tool_detected_preserves_exact_scalar_dict(self):
+        """When no tool is detected, extractor safely returns exact {'extracted_params': {}}."""
+        state = create_initial_state("Halo selamat pagi")
+        state["detected_tool"] = None
+        state["active_tools"] = []
+
+        result = extractor_node(state)
+        self.assertEqual(result, {"extracted_params": {}})
+
+    def test_multi_tool_cross_domain_extraction_stock_and_vendor_invoices(self):
+        """Multi-tool query spanning inventory and accounting extracts distinct parameters per tool plan."""
+        state = create_initial_state("Cek stok AAEO-NPKG dan tagihan vendor PT Sumber Makmur bulan ini")
+        state["is_multi_tool"] = True
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+        state["active_tools"] = [
+            {
+                "tool": "get_stock_level",
+                "domain": "inventory",
+                "sub_query": "Cek stok AAEO-NPKG",
+                "params": {},
+                "status": "pending",
+            },
+            {
+                "tool": "fetch_vendor_invoices",
+                "domain": "accounting",
+                "sub_query": "tagihan vendor PT Sumber Makmur bulan ini",
+                "params": {},
+                "status": "pending",
+            },
+        ]
+
+        result = extractor_node(state, ref_date=self.anchor_date)
+        active = result.get("active_tools", [])
+        extracted = result.get("extracted_params", {})
+
+        self.assertEqual(len(active), 2)
+        # Plan 0: get_stock_level
+        self.assertEqual(active[0]["tool"], "get_stock_level")
+        self.assertEqual(active[0]["params"].get("code"), "AAEO-NPKG")
+        self.assertNotIn("vendor_name", active[0]["params"])
+        self.assertNotIn("date_from", active[0]["params"])
+
+        # Plan 1: fetch_vendor_invoices
+        self.assertEqual(active[1]["tool"], "fetch_vendor_invoices")
+        self.assertEqual(active[1]["params"].get("vendor_name"), "PT Sumber Makmur")
+        self.assertEqual(active[1]["params"].get("date_from"), "2026-11-01")
+        self.assertEqual(active[1]["params"].get("date_to"), "2026-11-30")
+        self.assertNotIn("code", active[1]["params"])
+
+        # Scalar backward compatibility matches primary plan
+        self.assertEqual(extracted, active[0]["params"])
+
+    def test_multi_tool_cross_domain_stock_and_account_balance(self):
+        """Multi-tool query spanning inventory and account balance extracts distinct parameters."""
+        state = create_initial_state("Cek stok AAEO-NPKG dan saldo rekening 111100 bulan ini")
+        state["is_multi_tool"] = True
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+        state["active_tools"] = [
+            {
+                "tool": "get_stock_level",
+                "domain": "inventory",
+                "sub_query": "Cek stok AAEO-NPKG",
+                "params": {},
+                "status": "pending",
+            },
+            {
+                "tool": "get_account_balance",
+                "domain": "accounting",
+                "sub_query": "saldo rekening 111100 bulan ini",
+                "params": {},
+                "status": "pending",
+            },
+        ]
+
+        result = extractor_node(state, ref_date=self.anchor_date)
+        active = result.get("active_tools", [])
+
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["params"].get("code"), "AAEO-NPKG")
+        self.assertNotIn("account_code", active[0]["params"])
+
+        self.assertEqual(active[1]["params"].get("account_code"), "111100")
+        self.assertEqual(active[1]["params"].get("date_from"), "2026-11-01")
+        self.assertEqual(active[1]["params"].get("date_to"), "2026-11-30")
+        self.assertNotIn("code", active[1]["params"])
+
+    def test_multi_tool_anaphora_resolution_same_domain_forward(self):
+        """Anaphoric sub-query ('berapa stoknya?') resolves entity from preceding product info clause."""
+        state = create_initial_state("Berapa harga beli Art Paper dan berapa stoknya?")
+        state["is_multi_tool"] = True
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_product_info"
+        state["active_tools"] = [
+            {
+                "tool": "get_product_info",
+                "domain": "inventory",
+                "sub_query": "Berapa harga beli Art Paper",
+                "params": {},
+                "status": "pending",
+            },
+            {
+                "tool": "get_stock_level",
+                "domain": "inventory",
+                "sub_query": "berapa stoknya",
+                "params": {},
+                "status": "pending",
+            },
+        ]
+
+        result = extractor_node(state)
+        active = result.get("active_tools", [])
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["params"].get("search"), "Art Paper")
+        self.assertEqual(active[1]["params"].get("code"), "Art Paper")
+
+    def test_multi_tool_anaphora_resolution_same_domain_inverted(self):
+        """Inverted anaphoric query ('Berapa stoknya dan berapa harga beli Art Paper?') resolves entity correctly."""
+        state = create_initial_state("Berapa stoknya dan berapa harga beli Art Paper?")
+        state["is_multi_tool"] = True
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+        state["active_tools"] = [
+            {
+                "tool": "get_stock_level",
+                "domain": "inventory",
+                "sub_query": "Berapa stoknya",
+                "params": {},
+                "status": "pending",
+            },
+            {
+                "tool": "get_product_info",
+                "domain": "inventory",
+                "sub_query": "berapa harga beli Art Paper",
+                "params": {},
+                "status": "pending",
+            },
+        ]
+
+        result = extractor_node(state)
+        active = result.get("active_tools", [])
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["params"].get("code"), "Art Paper")
+        self.assertEqual(active[1]["params"].get("search"), "Art Paper")
+
+    def test_multi_tool_domain_schema_isolation_cross_domain(self):
+        """Cross-domain query ensures vendor names do not leak into inventory code and product names do not leak into vendor."""
+        state = create_initial_state("Cek stok produk dan faktur PT Sumber Makmur")
+        state["is_multi_tool"] = True
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+        state["active_tools"] = [
+            {
+                "tool": "get_stock_level",
+                "domain": "inventory",
+                "sub_query": "Cek stok produk",
+                "params": {},
+                "status": "pending",
+            },
+            {
+                "tool": "fetch_vendor_invoices",
+                "domain": "accounting",
+                "sub_query": "faktur PT Sumber Makmur",
+                "params": {},
+                "status": "pending",
+            },
+        ]
+
+        result = extractor_node(state, ref_date=self.anchor_date)
+        active = result.get("active_tools", [])
+        self.assertEqual(len(active), 2)
+        # Inventory tool must NOT absorb vendor name PT Sumber Makmur as code
+        self.assertIsNone(active[0]["params"].get("code"))
+        # Accounting tool extracts vendor name
+        self.assertEqual(active[1]["params"].get("vendor_name"), "PT Sumber Makmur")
+
+    def test_multi_tool_journal_entries_and_locations(self):
+        """Extraction across journal entries and inventory locations."""
+        state = create_initial_state("Cek jurnal JE/2026/001 status posted dan daftar gudang utama")
+        state["is_multi_tool"] = True
+        state["detected_domain"] = "accounting"
+        state["detected_tool"] = "get_journal_entries"
+        state["active_tools"] = [
+            {
+                "tool": "get_journal_entries",
+                "domain": "accounting",
+                "sub_query": "Cek jurnal JE/2026/001 status posted",
+                "params": {},
+                "status": "pending",
+            },
+            {
+                "tool": "get_locations",
+                "domain": "inventory",
+                "sub_query": "daftar gudang utama",
+                "params": {},
+                "status": "pending",
+            },
+        ]
+
+        result = extractor_node(state, ref_date=self.anchor_date)
+        active = result.get("active_tools", [])
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["params"].get("entry_number"), "JE/2026/001")
+        self.assertEqual(active[0]["params"].get("status"), "posted")
+        self.assertEqual(active[1]["params"].get("search"), "utama")
+
+    def test_multi_tool_mock_llm_structured_output_dispatch(self):
+        """Extractor properly dispatches schema-specific mock LLM invocations across active tools."""
+        mock_llm = MagicMock()
+        mock_stock = MagicMock()
+        mock_stock.invoke.return_value = StockLevelFilterSchema(code="AAEO-NPKG")
+        mock_invoice = MagicMock()
+        mock_invoice.invoke.return_value = VendorInvoiceFilterSchema(vendor_name="PT Sumber", date_from="2026-11-01")
+
+        def fake_structured_output(schema):
+            if schema == StockLevelFilterSchema:
+                return mock_stock
+            elif schema == VendorInvoiceFilterSchema:
+                return mock_invoice
+            return MagicMock()
+
+        mock_llm.with_structured_output.side_effect = fake_structured_output
+
+        state = create_initial_state("Cek stok AAEO-NPKG dan faktur vendor PT Sumber")
+        state["is_multi_tool"] = True
+        state["detected_tool"] = "get_stock_level"
+        state["active_tools"] = [
+            {"tool": "get_stock_level", "domain": "inventory", "sub_query": "Cek stok AAEO-NPKG", "params": {}},
+            {"tool": "fetch_vendor_invoices", "domain": "accounting", "sub_query": "faktur vendor PT Sumber", "params": {}},
+        ]
+
+        result = extractor_node(state, llm=mock_llm, ref_date=self.anchor_date)
+        active = result.get("active_tools", [])
+
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["params"].get("code"), "AAEO-NPKG")
+        self.assertEqual(active[1]["params"].get("vendor_name"), "PT Sumber")
+        self.assertEqual(result["extracted_params"], active[0]["params"])
+
+    def test_multi_tool_mock_llm_partial_failure_resilience(self):
+        """When LLM structured output fails on one tool, it gracefully falls back to deterministic extraction."""
+        mock_llm = MagicMock()
+        mock_stock = MagicMock()
+        mock_stock.invoke.return_value = StockLevelFilterSchema(code="AAEO-NPKG")
+        mock_invoice = MagicMock()
+        mock_invoice.invoke.side_effect = RuntimeError("OpenRouter 503 Provider Unavailable")
+
+        def fake_structured_output(schema):
+            if schema == StockLevelFilterSchema:
+                return mock_stock
+            elif schema == VendorInvoiceFilterSchema:
+                return mock_invoice
+            return MagicMock()
+
+        mock_llm.with_structured_output.side_effect = fake_structured_output
+
+        state = create_initial_state("Cek stok AAEO-NPKG dan faktur vendor PT Sumber Makmur")
+        state["is_multi_tool"] = True
+        state["detected_tool"] = "get_stock_level"
+        state["active_tools"] = [
+            {"tool": "get_stock_level", "domain": "inventory", "sub_query": "Cek stok AAEO-NPKG", "params": {}},
+            {"tool": "fetch_vendor_invoices", "domain": "accounting", "sub_query": "faktur vendor PT Sumber Makmur", "params": {}},
+        ]
+
+        result = extractor_node(state, llm=mock_llm, ref_date=self.anchor_date)
+        active = result.get("active_tools", [])
+
+        self.assertEqual(len(active), 2)
+        self.assertEqual(active[0]["params"].get("code"), "AAEO-NPKG")
+        # Plan 1 fell back to deterministic heuristic extraction
+        self.assertEqual(active[1]["params"].get("vendor_name"), "PT Sumber Makmur")
+
+    def test_multi_tool_state_immutability(self):
+        """extractor_node does not mutate original input active_tools list or inner dictionaries in-place."""
+        import copy
+        state = create_initial_state("Cek stok AAEO-NPKG dan faktur vendor PT Sumber")
+        original_plan_0 = {"tool": "get_stock_level", "domain": "inventory", "sub_query": "Cek stok AAEO-NPKG", "params": {}}
+        original_plan_1 = {"tool": "fetch_vendor_invoices", "domain": "accounting", "sub_query": "faktur vendor PT Sumber", "params": {}}
+        state["active_tools"] = [original_plan_0, original_plan_1]
+        state["detected_tool"] = "get_stock_level"
+
+        baseline_plans = copy.deepcopy(state["active_tools"])
+        result = extractor_node(state)
+
+        # Original state active_tools dictionaries must remain unmodified
+        self.assertEqual(state["active_tools"][0]["params"], baseline_plans[0]["params"])
+        self.assertEqual(state["active_tools"][1]["params"], baseline_plans[1]["params"])
+        # Returned active_tools must be a new list with populated params
+        self.assertNotEqual(id(result["active_tools"]), id(state["active_tools"]))
+        self.assertTrue(bool(result["active_tools"][0]["params"]))
+
+    def test_multi_tool_staged_relaxation_retry_cycle(self):
+        """Staged relaxation relaxes date filters on attempt 1 and entity filters on attempt 2."""
+        state = create_initial_state("Cek tagihan vendor PT Sumber Makmur bulan ini")
+        state["active_tools"] = [{
+            "tool": "fetch_vendor_invoices",
+            "domain": "accounting",
+            "sub_query": "Cek tagihan vendor PT Sumber Makmur bulan ini",
+            "params": {},
+        }]
+
+        # Retry 0: All filters present
+        res0 = extractor_node(state, ref_date=self.anchor_date)
+        p0 = res0["active_tools"][0]["params"]
+        self.assertEqual(p0.get("vendor_name"), "PT Sumber Makmur")
+        self.assertEqual(p0.get("date_from"), "2026-11-01")
+
+        # Retry 1: Dates removed
+        state["retry_count"] = 1
+        res1 = extractor_node(state, ref_date=self.anchor_date)
+        p1 = res1["active_tools"][0]["params"]
+        self.assertEqual(p1.get("vendor_name"), "PT Sumber Makmur")
+        self.assertNotIn("date_from", p1)
+        self.assertNotIn("date_to", p1)
+
+        # Retry 2: Dates and vendor_name removed
+        state["retry_count"] = 2
+        res2 = extractor_node(state, ref_date=self.anchor_date)
+        p2 = res2["active_tools"][0]["params"]
+        self.assertNotIn("date_from", p2)
+        self.assertNotIn("date_to", p2)
+        self.assertNotIn("vendor_name", p2)
+
 
 
 if __name__ == "__main__":
