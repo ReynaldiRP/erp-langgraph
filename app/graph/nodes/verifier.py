@@ -4,7 +4,7 @@ Evaluates tool execution results, implements an automated retry/correction cycle
 for empty query results (with maximum 2 retries), and provides conditional edge routing.
 """
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from app.graph.state import AgentState, VerificationStatus
 
@@ -17,10 +17,10 @@ def _calculate_records_count(tool_result: Any) -> int:
 
     Handles:
     - total_count or count fields (e.g. Journal entries, Vendor invoices)
-    - list entries/records (e.g. accounts, entries, products, items)
+    - list entries/records (e.g. accounts, entries, products, items, locations)
     - root lists (e.g. multiple items array)
-    - single record dictionary (e.g. stock level for a single product)
-    - empty structures or None -> 0
+    - single record dictionary with recognized business attributes (e.g. stock quant, product, balance)
+    - error or detail payload dicts, empty structures or None -> 0
     """
     if tool_result is None:
         return 0
@@ -32,6 +32,15 @@ def _calculate_records_count(tool_result: Any) -> int:
         if not tool_result:
             return 0
 
+        # Check explicit error payloads from upstream ERP / DRF endpoints
+        if (
+            tool_result.get("error") is not None
+            or tool_result.get("detail") is not None
+            or tool_result.get("errors") is not None
+            or tool_result.get("success") is False
+        ):
+            return 0
+
         # Check explicit count fields
         if "total_count" in tool_result and isinstance(tool_result["total_count"], (int, float)):
             return int(tool_result["total_count"])
@@ -40,7 +49,7 @@ def _calculate_records_count(tool_result: Any) -> int:
             return int(tool_result["count"])
 
         # Check common collection list keys
-        for list_key in ("entries", "accounts", "products", "items", "records", "lines"):
+        for list_key in ("entries", "accounts", "products", "items", "records", "lines", "locations"):
             val = tool_result.get(list_key)
             if isinstance(val, list):
                 return len(val)
@@ -50,17 +59,64 @@ def _calculate_records_count(tool_result: Any) -> int:
             return _calculate_records_count(tool_result["data"])
 
         # Specific check for aggregate balance payloads without account records
-        # If dict only contains aggregate totals (net_balance, total_debit, total_credit)
-        # and all are 0, this indicates no account was found or no activity exists.
-        balance_metric_keys = {"net_balance", "total_debit", "total_credit", "grand_net_balance", "grand_total_debit", "grand_total_credit"}
+        balance_metric_keys = {
+            "net_balance", "total_debit", "total_credit",
+            "grand_net_balance", "grand_total_debit", "grand_total_credit"
+        }
         if all(k in balance_metric_keys for k in tool_result.keys()):
             # All keys are aggregate financial sums; check if any non-zero value exists
             has_value = any(float(v or 0) != 0.0 for v in tool_result.values() if isinstance(v, (int, float)))
-            if not has_value:
-                return 0
+            return 1 if has_value else 0
 
-        # Single record payload (e.g. stock level dict containing product_id or qty_on_hand)
-        return 1
+        # Single record entity check: verify presence of known ERP business record attributes
+        KNOWN_RECORD_ATTRS = {
+            "id",
+            "product_id",
+            "product_name",
+            "sku",
+            "code",
+            "default_code",
+            "barcode",
+            "account_id",
+            "account_code",
+            "account_name",
+            "location_id",
+            "location_name",
+            "partner_id",
+            "partner_name",
+            "vendor_id",
+            "vendor_name",
+            "invoice_id",
+            "journal_id",
+            "move_id",
+            "reference",
+            "name",
+            "uom",
+            "qty_on_hand",
+            "quantity",
+            "available_quantity",
+            "virtual_available",
+            "incoming_qty",
+            "outgoing_qty",
+            "net_balance",
+            "total_debit",
+            "total_credit",
+            "grand_net_balance",
+            "amount_total",
+            "price_unit",
+            "list_price",
+            "standard_price",
+            "debit",
+            "credit",
+            "balance",
+        }
+        has_business_attr = any(k in KNOWN_RECORD_ATTRS for k in tool_result.keys())
+        has_non_none_value = any(v is not None for v in tool_result.values())
+        if has_business_attr and has_non_none_value:
+            return 1
+
+        # Fallback for unrecognized payload dictionaries without ERP business attributes
+        return 0
 
     return 0
 
@@ -84,54 +140,72 @@ def verifier_node(state: AgentState) -> Dict[str, Any]:
     Returns:
         Partial AgentState update dictionary.
     """
-    # 1. Preserve pre-existing ERROR status from tool_node
     current_instruction = state.get("retry_instruction")
     preserved_replay = current_instruction if current_instruction and current_instruction.startswith("Mengulang permintaan:") else None
 
-    if state.get("verification_status") == "ERROR" or (
-        state.get("error_message") and state.get("tool_result") is None
-    ):
-        logger.info("Preserving ERROR verification status from previous node failure.")
-        return {
-            "verification_status": "ERROR",
-            "retry_instruction": preserved_replay,
-        }
-
     multi_results = state.get("multi_tool_results") or {}
-    is_multi = state.get("is_multi_tool") or (len(multi_results) > 1)
+    multi_status = state.get("multi_verification_status") or {}
+    active_tools = state.get("active_tools") or []
+    is_multi = state.get("is_multi_tool") or (len(multi_results) > 1) or (len(active_tools) > 1)
 
     # ------------------------------------------------------------------
     # Path A: Aggregate Verification for Multi-Tool Execution (Milestone 4)
     # ------------------------------------------------------------------
-    if is_multi and multi_results:
+    if is_multi and (multi_results or active_tools):
+        tool_counts: Dict[str, int] = {}
+        for p in active_tools:
+            tn = p.get("tool", "unnamed_tool")
+            tool_counts[tn] = tool_counts.get(tn, 0) + 1
+
+        items: List[Tuple[str, Any, Optional[str]]] = []
+
+        if active_tools:
+            for idx, plan in enumerate(active_tools):
+                tn = plan.get("tool", "unnamed_tool")
+                key = f"{tn}_{idx}" if tool_counts.get(tn, 0) > 1 else tn
+                res = plan.get("result")
+                if res is None and key in multi_results:
+                    res = multi_results[key]
+                elif res is None and tn in multi_results:
+                    res = multi_results[tn]
+                st = plan.get("status") or multi_status.get(key) or multi_status.get(tn)
+                items.append((key, res, st))
+        else:
+            for key, res in multi_results.items():
+                items.append((key, res, multi_status.get(key)))
+
         per_tool_status: Dict[str, str] = {}
         total_records = 0
         has_empty_tool = False
+        has_error_tool = False
+        has_valid_tool = False
 
-        for t_name, res in multi_results.items():
-            if res is None and state.get("error_message"):
-                per_tool_status[t_name] = "ERROR"
+        for key, res, st in items:
+            if st in ("error", "ERROR") or (res is None and state.get("error_message")):
+                per_tool_status[key] = "ERROR"
+                has_error_tool = True
             else:
                 cnt = _calculate_records_count(res)
                 total_records += cnt
                 if cnt > 0:
-                    per_tool_status[t_name] = "VALID"
+                    per_tool_status[key] = "VALID"
+                    has_valid_tool = True
                 else:
-                    per_tool_status[t_name] = "EMPTY"
+                    per_tool_status[key] = "EMPTY"
                     has_empty_tool = True
 
         current_retry_count = int(state.get("retry_count") or 0)
 
-        # If all tools returned valid data
-        if not has_empty_tool and total_records > 0:
-            logger.info(f"Multi-tool verification successful: all {len(multi_results)} tools found records.")
+        # 1. If all tools failed with error and none succeeded or returned empty data
+        if has_error_tool and not has_valid_tool and not has_empty_tool:
+            logger.warning("Multi-tool verification: all tools encountered errors -> ERROR.")
             return {
-                "verification_status": "VALID",
+                "verification_status": "ERROR",
                 "multi_verification_status": per_tool_status,
                 "retry_instruction": preserved_replay,
             }
 
-        # If any tool is empty and we have retry budget
+        # 2. If any tool returned empty and we have retry budget
         if has_empty_tool and current_retry_count < 2:
             next_retry = current_retry_count + 1
             if next_retry == 1:
@@ -152,15 +226,19 @@ def verifier_node(state: AgentState) -> Dict[str, Any]:
                 "retry_instruction": instruction,
             }
 
-        # If retries exhausted: return VALID if at least one tool succeeded, otherwise EMPTY
-        if total_records > 0:
-            logger.info("Multi-tool verification finished: partial data available after retries -> VALID.")
+        # 3. If at least one tool returned valid records (whether retries exhausted or other tools errored/empty)
+        if total_records > 0 or has_valid_tool:
+            if has_error_tool:
+                logger.info("Multi-tool verification: partial data available with some tool errors -> VALID.")
+            else:
+                logger.info(f"Multi-tool verification successful: all {len(items)} tools found records.")
             return {
                 "verification_status": "VALID",
                 "multi_verification_status": per_tool_status,
                 "retry_instruction": preserved_replay,
             }
 
+        # 4. If all tools empty and retry limit reached
         logger.info("Multi-tool verification finished: all tools empty and retry limit reached -> EMPTY.")
         return {
             "verification_status": "EMPTY",
@@ -171,6 +249,16 @@ def verifier_node(state: AgentState) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Path B: Single-Tool Verification (Backward Compatibility)
     # ------------------------------------------------------------------
+    # 1. Preserve pre-existing ERROR status from tool_node
+    if state.get("verification_status") == "ERROR" or (
+        state.get("error_message") and state.get("tool_result") is None
+    ):
+        logger.info("Preserving ERROR verification status from previous node failure.")
+        return {
+            "verification_status": "ERROR",
+            "retry_instruction": preserved_replay,
+        }
+
     tool_result = state.get("tool_result")
     records_count = _calculate_records_count(tool_result)
     current_retry_count = int(state.get("retry_count") or 0)

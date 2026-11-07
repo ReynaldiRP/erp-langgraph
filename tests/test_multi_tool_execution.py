@@ -58,9 +58,9 @@ class TestMultiToolExecution(unittest.TestCase):
         stock_plan = next(p for p in updated_plans if p.get("tool") == "get_stock_level")
         balance_plan = next(p for p in updated_plans if p.get("tool") == "get_account_balance")
 
-        # Stock plan parameters
+        # Stock plan parameters (multi-word product name preserved)
         self.assertIn("code", stock_plan["params"])
-        self.assertEqual(stock_plan["params"]["code"], "Kertas")
+        self.assertEqual(stock_plan["params"]["code"], "Kertas Art Paper")
 
         # Accounting balance plan parameters (relative date resolved to current month)
         self.assertEqual(balance_plan["params"].get("date_from"), "2026-11-01")
@@ -210,6 +210,145 @@ class TestMultiToolExecution(unittest.TestCase):
         self.assertIn("Kertas Art Paper", final_answer)
         self.assertIn("100.0 unit", final_answer)
         self.assertIn("Rp 15.000.000,00", final_answer)
+
+    def test_partial_failure_order_independence_failed_first(self):
+        """When first tool fails and second succeeds, verifier marks turn VALID (not ERROR)."""
+        mock_client = AsyncMock(spec=DjangoCoreClient)
+        mock_client.fetch_vendor_invoices.side_effect = Exception("ERP Invoice service unavailable (500)")
+        mock_client.fetch_stock_level.return_value = [
+            {"code": "AP-210", "name": "Kertas Art Paper 210", "quantity": 150.0, "company_id": 1}
+        ]
+
+        active_tools = [
+            {"tool": "fetch_vendor_invoices", "domain": "accounting", "params": {"company_id": 1}},
+            {"tool": "get_stock_level", "domain": "inventory", "params": {"company_id": 1}},
+        ]
+        state: AgentState = {
+            "user_query": "Cek faktur dan stok barang",
+            "is_multi_tool": True,
+            "active_tools": active_tools,
+            "company_id": 1,
+            "retry_count": 0,
+        }
+
+        tool_delta = asyncio.run(tool_node(state, client=mock_client))
+        merged_state = {**state, **tool_delta}
+
+        verifier_delta = verifier_node(merged_state)
+        self.assertEqual(verifier_delta.get("verification_status"), "VALID")
+        multi_status = verifier_delta.get("multi_verification_status", {})
+        self.assertEqual(multi_status.get("fetch_vendor_invoices"), "ERROR")
+        self.assertEqual(multi_status.get("get_stock_level"), "VALID")
+
+    def test_partial_failure_order_independence_succeeded_first(self):
+        """When first tool succeeds and second fails, verifier marks turn VALID with identical per-tool status."""
+        mock_client = AsyncMock(spec=DjangoCoreClient)
+        mock_client.fetch_stock_level.return_value = [
+            {"code": "AP-210", "name": "Kertas Art Paper 210", "quantity": 150.0, "company_id": 1}
+        ]
+        mock_client.fetch_vendor_invoices.side_effect = Exception("ERP Invoice service unavailable (500)")
+
+        active_tools = [
+            {"tool": "get_stock_level", "domain": "inventory", "params": {"company_id": 1}},
+            {"tool": "fetch_vendor_invoices", "domain": "accounting", "params": {"company_id": 1}},
+        ]
+        state: AgentState = {
+            "user_query": "Cek stok barang dan faktur",
+            "is_multi_tool": True,
+            "active_tools": active_tools,
+            "company_id": 1,
+            "retry_count": 0,
+        }
+
+        tool_delta = asyncio.run(tool_node(state, client=mock_client))
+        merged_state = {**state, **tool_delta}
+
+        verifier_delta = verifier_node(merged_state)
+        self.assertEqual(verifier_delta.get("verification_status"), "VALID")
+        multi_status = verifier_delta.get("multi_verification_status", {})
+        self.assertEqual(multi_status.get("get_stock_level"), "VALID")
+        self.assertEqual(multi_status.get("fetch_vendor_invoices"), "ERROR")
+
+    def test_all_tools_failed_returns_error(self):
+        """When all tools fail in multi-tool execution, verifier returns ERROR."""
+        mock_client = AsyncMock(spec=DjangoCoreClient)
+        mock_client.fetch_stock_level.side_effect = Exception("Stock service down")
+        mock_client.fetch_vendor_invoices.side_effect = Exception("Invoice service down")
+
+        active_tools = [
+            {"tool": "get_stock_level", "domain": "inventory", "params": {"company_id": 1}},
+            {"tool": "fetch_vendor_invoices", "domain": "accounting", "params": {"company_id": 1}},
+        ]
+        state: AgentState = {
+            "user_query": "Cek stok dan faktur",
+            "is_multi_tool": True,
+            "active_tools": active_tools,
+            "company_id": 1,
+            "retry_count": 0,
+        }
+
+        tool_delta = asyncio.run(tool_node(state, client=mock_client))
+        merged_state = {**state, **tool_delta}
+
+        verifier_delta = verifier_node(merged_state)
+        self.assertEqual(verifier_delta.get("verification_status"), "ERROR")
+        multi_status = verifier_delta.get("multi_verification_status", {})
+        self.assertEqual(multi_status.get("get_stock_level"), "ERROR")
+        self.assertEqual(multi_status.get("fetch_vendor_invoices"), "ERROR")
+
+    def test_duplicate_tool_names_not_overwritten(self):
+        """Duplicate tool calls in active_tools use composite keys and format both results in synthesizer."""
+        mock_client = AsyncMock(spec=DjangoCoreClient)
+
+        async def mock_fetch_stock(params=None, user_token=None, company_id=None):
+            code = (params or {}).get("code")
+            if code == "PROD-A":
+                return [{"code": "PROD-A", "name": "Kertas Art Paper A4", "quantity": 100.0, "company_id": 1}]
+            elif code == "PROD-B":
+                return [{"code": "PROD-B", "name": "Tinta Hitam Premium", "quantity": 50.0, "company_id": 1}]
+            return []
+
+        mock_client.fetch_stock_level = AsyncMock(side_effect=mock_fetch_stock)
+
+        active_tools = [
+            {"tool": "get_stock_level", "domain": "inventory", "params": {"code": "PROD-A", "company_id": 1}},
+            {"tool": "get_stock_level", "domain": "inventory", "params": {"code": "PROD-B", "company_id": 1}},
+        ]
+        state: AgentState = {
+            "user_query": "Cek stok Kertas Art Paper A4 dan cek stok Tinta Hitam",
+            "is_multi_tool": True,
+            "active_tools": active_tools,
+            "company_id": 1,
+            "retry_count": 0,
+        }
+
+        # 1. Execute tool_node
+        tool_delta = asyncio.run(tool_node(state, client=mock_client))
+        multi_results = tool_delta.get("multi_tool_results") or {}
+
+        # Composite keys prevent overwriting
+        self.assertIn("get_stock_level_0", multi_results)
+        self.assertIn("get_stock_level_1", multi_results)
+        self.assertEqual(multi_results["get_stock_level_0"][0]["name"], "Kertas Art Paper A4")
+        self.assertEqual(multi_results["get_stock_level_1"][0]["name"], "Tinta Hitam Premium")
+
+        # 2. Execute verifier_node
+        merged_state = {**state, **tool_delta}
+        verifier_delta = verifier_node(merged_state)
+        self.assertEqual(verifier_delta.get("verification_status"), "VALID")
+        multi_status = verifier_delta.get("multi_verification_status", {})
+        self.assertEqual(multi_status.get("get_stock_level_0"), "VALID")
+        self.assertEqual(multi_status.get("get_stock_level_1"), "VALID")
+
+        # 3. Format deterministic answer in synthesizer
+        final_state = {**merged_state, **verifier_delta}
+        formatted = format_deterministic_answer(final_state)
+
+        # Both product names and their stock amounts must be rendered in the Markdown output
+        self.assertIn("Kertas Art Paper A4", formatted)
+        self.assertIn("100.0 unit", formatted)
+        self.assertIn("Tinta Hitam Premium", formatted)
+        self.assertIn("50.0 unit", formatted)
 
 
 if __name__ == "__main__":

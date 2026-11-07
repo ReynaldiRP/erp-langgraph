@@ -67,6 +67,25 @@ class TestRecordsCountCalculation(unittest.TestCase):
         self.assertEqual(_calculate_records_count({"accounts": [], "total_debit": 0.0, "total_credit": 0.0, "net_balance": 0.0}), 0)
         self.assertEqual(_calculate_records_count({"total_debit": 50000.0, "total_credit": 0.0, "net_balance": 50000.0}), 1)
 
+    def test_count_from_error_and_detail_payloads(self):
+        """Error and detail payloads must evaluate to 0 records instead of defaulting to 1."""
+        self.assertEqual(_calculate_records_count({"detail": "Warehouse not found"}), 0)
+        self.assertEqual(_calculate_records_count({"error": "Product variant not found"}), 0)
+        self.assertEqual(_calculate_records_count({"errors": ["Missing company_id"]}), 0)
+        self.assertEqual(_calculate_records_count({"success": False, "message": "Failed"}), 0)
+        self.assertEqual(_calculate_records_count({"detail": "Not found", "status_code": 404}), 0)
+
+    def test_count_from_unrecognized_arbitrary_dict(self):
+        """Unexpected dictionary without known ERP business attributes evaluates to 0 records."""
+        self.assertEqual(_calculate_records_count({"status": "ok"}), 0)
+        self.assertEqual(_calculate_records_count({"foo": "bar", "unknown_key": 123}), 0)
+        self.assertEqual(_calculate_records_count({"product_id": None, "qty_on_hand": None}), 0)
+
+    def test_count_from_locations_list(self):
+        """Payload with locations collection key evaluates to list length."""
+        self.assertEqual(_calculate_records_count({"locations": [{"id": 1, "name": "Gudang Utama"}]}), 1)
+        self.assertEqual(_calculate_records_count({"locations": []}), 0)
+
 
 class TestVerifierNodeTransitions(unittest.TestCase):
     """Test suite validating verifier_node status transitions, retries, and instructions."""

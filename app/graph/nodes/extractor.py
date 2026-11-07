@@ -177,28 +177,29 @@ def _fallback_extract_vendor_invoice(
 ) -> Dict[str, Any]:
     """Deterministic heuristic extraction for vendor invoice inquiries."""
     params: Dict[str, Any] = {}
+    cleaned = re.sub(r"[^\w\)]+$", "", (query or "").strip(), flags=re.UNICODE).strip()
 
     vendor_pattern = re.search(
-        rf"(?:vendor|supplier|pemasok)\s+([A-Za-z0-9\.\s]+?)(?:\s+{VENDOR_DELIMITERS}|$)",
-        query,
+        rf"(?:vendor|supplier|pemasok)\s+([A-Za-z0-9\.\s]+?)(?:\s*[,?!;:/\-]+\s*{VENDOR_DELIMITERS}|\s+{VENDOR_DELIMITERS}|$)",
+        cleaned,
         re.IGNORECASE,
     )
     if vendor_pattern:
-        v_name = vendor_pattern.group(1).strip()
+        v_name = vendor_pattern.group(1).strip().rstrip("?!.,; ")
         if v_name.lower() not in VENDOR_NAME_STOPWORDS:
             params["vendor_name"] = v_name
     else:
         prefix_pattern = re.search(
-            rf"\b((?:PT|CV|UD|Toko)\.?\s+[A-Za-z0-9\.\s]+?)(?:\s+{VENDOR_DELIMITERS}|$)",
-            query,
+            rf"\b((?:PT|CV|UD|Toko)\.?\s+[A-Za-z0-9\.\s]+?)(?:\s*[,?!;:/\-]+\s*{VENDOR_DELIMITERS}|\s+{VENDOR_DELIMITERS}|$)",
+            cleaned,
             re.IGNORECASE,
         )
         if prefix_pattern:
-            v_name = prefix_pattern.group(1).strip()
+            v_name = prefix_pattern.group(1).strip().rstrip("?!.,; ")
             if v_name.lower() not in VENDOR_NAME_STOPWORDS:
                 params["vendor_name"] = v_name
 
-    query_lower = query.lower()
+    query_lower = (query or "").lower()
     if "belum lunas" in query_lower or "unpaid" in query_lower or "belum dibayar" in query_lower:
         params["status"] = "unpaid"
     elif "lunas" in query_lower or "paid" in query_lower or "sudah dibayar" in query_lower:
@@ -220,6 +221,7 @@ STOCK_STOPWORDS = (
     "gudang", "lokasi", "customer", "pelanggan",
     "dan", "serta", "juga", "faktur", "tagihan", "invoice", "jurnal", "saldo",
 )
+STOCK_DELIMITERS = r"(?:dan|serta|di|ke|pada|untuk|bulan|hari|berapa|status|faktur|tagihan|invoice|saldo|jurnal|gudang|lokasi)"
 
 
 def _fallback_extract_stock_level(
@@ -228,7 +230,7 @@ def _fallback_extract_stock_level(
 ) -> Dict[str, Any]:
     """Deterministic heuristic extraction for stock level inquiries when LLM is unavailable."""
     params: Dict[str, Any] = {}
-    cleaned = query.strip()
+    cleaned = re.sub(r"[^\w\)]+$", "", (query or "").strip(), flags=re.UNICODE).strip()
 
     loc_match = re.search(
         r"\bdi\s+(?:gudang\s+|lokasi\s+)?([A-Za-z0-9\_\-]+)",
@@ -243,14 +245,24 @@ def _fallback_extract_stock_level(
         ):
             params["location_name"] = loc_candidate
 
-    match = re.search(
-        r"(?:(?:stok|stock|sisa|barang|produk)\s+)+(?:untuk\s+|terkait\s+|dari\s+|tentang\s+)?([A-Za-z0-9\-\_\.]+)",
-        cleaned,
+    pattern = re.compile(
+        r"(?:(?:stok|stock|sisa|barang|produk)\s+)+(?:untuk\s+|terkait\s+|dari\s+|tentang\s+)?"
+        r"(?!di\b|pada\b|ke\b|gudang\b|lokasi\b|faktur\b|tagihan\b|saldo\b|jurnal\b|customer\b|pelanggan\b)"
+        r"([A-Za-z0-9\-\_\.\s]+?)"
+        rf"(?:\s*[\.\?\!\;\:]\s+|\s+{STOCK_DELIMITERS}|$)",
         re.IGNORECASE,
     )
+    match = pattern.search(cleaned)
+    if not match:
+        match = re.search(
+            rf"(?:untuk|terkait|tentang)\s+(?!di\b|pada\b|ke\b|gudang\b|lokasi\b|faktur\b|tagihan\b|saldo\b|jurnal\b|customer\b|pelanggan\b)([A-Za-z0-9\-_\.\s]+?)(?:\s*[\.\?\!\;\:]\s+|\s+{STOCK_DELIMITERS}|$)",
+            cleaned,
+            re.IGNORECASE,
+        )
     if match:
-        token = match.group(1).strip()
-        if token.lower() not in STOCK_STOPWORDS:
+        token = match.group(1).strip().rstrip("?!.,; ")
+        words = [w for w in token.split() if w.lower() not in STOCK_STOPWORDS]
+        if words:
             params["code"] = token
             return params
 

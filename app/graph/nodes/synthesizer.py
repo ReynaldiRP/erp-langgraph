@@ -293,32 +293,62 @@ def format_deterministic_answer(state: AgentState) -> str:
         )
 
     multi_results = state.get("multi_tool_results") or {}
-    is_multi = state.get("is_multi_tool") or (len(multi_results) > 1)
+    active_tools = state.get("active_tools") or []
+    is_multi = state.get("is_multi_tool") or (len(multi_results) > 1) or (len(active_tools) > 1)
 
     # 4. Multi-Tool Execution Unified Formatting (Milestone 4)
-    if is_multi and multi_results:
+    if is_multi and (multi_results or active_tools):
         sections: List[str] = []
-        active_tools = state.get("active_tools") or []
-        ordered_tools = [p.get("tool") for p in active_tools if p.get("tool")]
-        if not ordered_tools:
-            ordered_tools = list(multi_results.keys())
 
-        for t_name in ordered_tools:
-            res = multi_results.get(t_name)
-            if res:
-                formatted = _format_single_tool_presentation(t_name, res)
-                if formatted:
-                    sections.append(formatted)
-            else:
-                domain_label = "Modul ERP"
-                if "stock" in t_name or "product" in t_name or "location" in t_name:
-                    domain_label = "Inventaris / Stok"
-                elif "balance" in t_name or "invoice" in t_name or "journal" in t_name:
-                    domain_label = "Akuntansi / Keuangan"
-                sections.append(
-                    f"### Informasi {domain_label} (`{t_name}`)\n\n"
-                    f"Tidak ditemukan data atau terjadi kendala saat memuat informasi untuk modul ini."
-                )
+        if active_tools:
+            tool_counts: Dict[str, int] = {}
+            for p in active_tools:
+                tn = p.get("tool", "unnamed_tool")
+                tool_counts[tn] = tool_counts.get(tn, 0) + 1
+
+            for idx, plan in enumerate(active_tools):
+                t_name = plan.get("tool")
+                if not t_name:
+                    continue
+                key = f"{t_name}_{idx}" if tool_counts.get(t_name, 0) > 1 else t_name
+                # Check plan result first, then composite key, then base tool name
+                res = plan.get("result")
+                if res is None and key in multi_results:
+                    res = multi_results[key]
+                elif res is None and t_name in multi_results:
+                    res = multi_results[t_name]
+
+                if res:
+                    formatted = _format_single_tool_presentation(t_name, res)
+                    if formatted:
+                        sections.append(formatted)
+                else:
+                    domain_label = "Modul ERP"
+                    if "stock" in t_name or "product" in t_name or "location" in t_name:
+                        domain_label = "Inventaris / Stok"
+                    elif "balance" in t_name or "invoice" in t_name or "journal" in t_name:
+                        domain_label = "Akuntansi / Keuangan"
+                    sections.append(
+                        f"### Informasi {domain_label} (`{t_name}`)\n\n"
+                        f"Tidak ditemukan data atau terjadi kendala saat memuat informasi untuk modul ini."
+                    )
+        else:
+            for key, res in multi_results.items():
+                base_tool = key.rsplit("_", 1)[0] if ("_" in key and key.rsplit("_", 1)[1].isdigit()) else key
+                if res:
+                    formatted = _format_single_tool_presentation(base_tool, res)
+                    if formatted:
+                        sections.append(formatted)
+                else:
+                    domain_label = "Modul ERP"
+                    if "stock" in base_tool or "product" in base_tool or "location" in base_tool:
+                        domain_label = "Inventaris / Stok"
+                    elif "balance" in base_tool or "invoice" in base_tool or "journal" in base_tool:
+                        domain_label = "Akuntansi / Keuangan"
+                    sections.append(
+                        f"### Informasi {domain_label} (`{base_tool}`)\n\n"
+                        f"Tidak ditemukan data atau terjadi kendala saat memuat informasi untuk modul ini."
+                    )
 
         if sections:
             return "\n\n---\n\n".join(sections)

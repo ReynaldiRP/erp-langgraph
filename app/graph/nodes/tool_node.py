@@ -129,30 +129,46 @@ async def tool_node(
             updated_active_tools: List[Dict[str, Any]] = []
             errors: List[str] = []
 
-            for plan, res in zip(active_tools, results):
+            # Track tool frequencies to resolve duplicate tool names with composite keys
+            tool_counts: Dict[str, int] = {}
+            for plan in active_tools:
+                tn = plan.get("tool", "unnamed_tool")
+                tool_counts[tn] = tool_counts.get(tn, 0) + 1
+
+            for idx, (plan, res) in enumerate(zip(active_tools, results)):
                 p_copy = dict(plan)
                 t_name = p_copy.get("tool", "unnamed_tool")
+                key = f"{t_name}_{idx}" if tool_counts.get(t_name, 0) > 1 else t_name
+
                 if isinstance(res, Exception):
                     err_msg = str(res)
-                    multi_tool_results[t_name] = None
-                    multi_verification_status[t_name] = "ERROR"
+                    multi_tool_results[key] = None
+                    multi_verification_status[key] = "ERROR"
                     p_copy["status"] = "error"
+                    p_copy["error"] = err_msg
                     errors.append(f"{t_name}: {err_msg}")
                 else:
                     final_res, err = res
                     if err:
-                        multi_tool_results[t_name] = None
-                        multi_verification_status[t_name] = "ERROR"
+                        multi_tool_results[key] = None
+                        multi_verification_status[key] = "ERROR"
                         p_copy["status"] = "error"
+                        p_copy["error"] = err
                         errors.append(f"{t_name}: {err}")
                     else:
-                        multi_tool_results[t_name] = final_res
-                        multi_verification_status[t_name] = "VALID"
+                        multi_tool_results[key] = final_res
+                        multi_verification_status[key] = "VALID"
                         p_copy["status"] = "success"
+                        p_copy["result"] = final_res
+
                 updated_active_tools.append(p_copy)
 
             primary_tool = state.get("detected_tool") or active_tools[0].get("tool", "fetch_vendor_invoices")
             primary_result = multi_tool_results.get(primary_tool)
+            if primary_result is None and f"{primary_tool}_0" in multi_tool_results:
+                primary_result = multi_tool_results.get(f"{primary_tool}_0")
+            if primary_result is None:
+                primary_result = next((r for r in multi_tool_results.values() if r is not None), None)
 
             has_success = any(st == "VALID" for st in multi_verification_status.values())
             all_failed = not has_success and len(multi_verification_status) > 0
