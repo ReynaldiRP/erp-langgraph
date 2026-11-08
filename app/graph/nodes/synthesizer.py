@@ -250,13 +250,20 @@ def format_deterministic_answer(state: AgentState) -> str:
     # 3. General Domain / Guardrail Inquiries
     if (domain == "general" or not tool) and not is_multi:
         query_lower = user_query.lower()
-        if any(term in query_lower for term in ("pelanggan", "customer", "piutang")):
+        billing_terms = (
+            "pelanggan", "customer", "piutang", "tagihan",
+            "faktur", "invoice", "bill", "kuitansi", "bon"
+        )
+        if any(term in query_lower for term in billing_terms):
             return (
-                "### Informasi Tagihan Pelanggan (Customer)\n\n"
-                "Mohon maaf, sistem AI Orchestrator saat ini dikhususkan untuk **tagihan vendor / pemasok**, "
+                "### Informasi Tagihan Pelanggan (Customer) & Panduan Faktur\n\n"
+                "Sistem AI Orchestrator saat ini dikhususkan untuk **tagihan vendor / pemasok** (Hutang Usaha), "
                 "buku jurnal, saldo akun kas, dan inventaris barang.\n\n"
-                "Untuk memeriksa tagihan atau piutang pelanggan, silakan akses modul **Penjualan (Sales / Invoicing)** "
-                "secara langsung di aplikasi FastPrint ERP."
+                "**Panduan & Solusi**:\n"
+                "- **Tagihan / Piutang Pelanggan**: Untuk memeriksa transaksi atau tagihan pelanggan (seperti penjualan toko/mainstore), "
+                "silakan akses modul **Penjualan (Sales / Invoicing)** atau POS secara langsung di aplikasi FastPrint ERP.\n"
+                "- **Jika Rekanan adalah Vendor**: Jika pihak yang Anda maksud adalah pemasok/vendor barang, sertakan kata `'vendor'` "
+                "(contoh: `coba cek tagihan vendor [Nama Vendor]`)."
             )
         return (
             "Halo! Saya adalah Asisten AI FastPrint ERP. Saya dapat membantu Anda memeriksa:\n"
