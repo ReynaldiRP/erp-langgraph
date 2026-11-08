@@ -469,6 +469,29 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
             "active_tools": [],
         }
 
+    # 1.1 Fast-Path Non-Vendor Billing Guardrail (Customer / Retail / Ambiguous Billing)
+    billing_keywords = (
+        "tagihan",
+        "faktur",
+        "invoice",
+        "bill",
+        "piutang",
+        "kuitansi",
+        "bon",
+    )
+    has_billing_kw = any(term in cleaned for term in billing_keywords)
+    if has_billing_kw and not has_vendor and not has_purchase_invoice and not candidates and not is_rag:
+        return {
+            "detected_domain": "general",
+            "detected_tool": None,
+            "query_mode": "general",
+            "rag_query": None,
+            "is_multi_tool": False,
+            "detected_domains": ["general"],
+            "detected_tools": [],
+            "active_tools": [],
+        }
+
     # 2. Check for Hybrid (both RAG knowledge and Live tool intents)
     if is_rag and candidates:
         primary = candidates[0]
