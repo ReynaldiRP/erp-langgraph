@@ -373,6 +373,15 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
         if matches:
             candidates.append(("fetch_vendor_invoices", "accounting", min(matches)))
 
+    # Accounting: Specific document number reference (e.g. PC/2026/00002, BDG/JE/2026/00009, JE/2026/001)
+    doc_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", cleaned)
+    if doc_match and not any(c[0] in ("fetch_vendor_invoices", "get_journal_entries") for c in candidates):
+        doc_code = doc_match.group(1).upper()
+        if "JE" in doc_code:
+            candidates.append(("get_journal_entries", "accounting", doc_match.start()))
+        else:
+            candidates.append(("fetch_vendor_invoices", "accounting", doc_match.start()))
+
     # Accounting: Journal entries
     journal_match = None
     if ("jurnal" in cleaned or "journal" in cleaned) and any(kw in cleaned for kw in ("entri", "transaksi", "daftar", "list", "riwayat", "terakhir", "hari", "bulan", "minggu")):
@@ -643,6 +652,7 @@ def router_node(
                 "Evaluate user query in context of conversational history.\n"
                 "If user asks to retry or follow up, infer intended domain and target ERP tools from history.\n\n"
                 "CRITICAL GUARDRAILS:\n"
+                "- References to specific ERP transaction document numbers (e.g., 'PC/...', 'JE/...', 'INV/...') must be routed to domain='accounting' (fetch_vendor_invoices or get_journal_entries).\n"
                 "- Customer / pelanggan inquiries targeting invoices, billing, or accounts receivable must NOT be routed to 'fetch_vendor_invoices'. Set domain='general', tool=null, planned_tools=[].\n"
                 "- Customer / pelanggan inquiries asking about inventory stock, warehouse locations, or product details must be routed to domain='inventory'.\n"
                 "- Whenever domain is 'general' or 'out_of_scope', tool MUST be null and planned_tools MUST be empty."

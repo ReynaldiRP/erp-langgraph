@@ -159,6 +159,93 @@ class TestBranchAndVendorExtractor(unittest.TestCase):
         self.assertIn("Total Nilai Transaksi", rendered)
         self.assertIn("Rp 805.000,00", rendered)
 
+    def test_synthesizer_renders_single_document_line_items_detail(self):
+        """Test synthesizer renders header card and itemized table when a single document with lines is returned."""
+        from app.graph.nodes.synthesizer import _format_single_tool_presentation
+
+        tool_result = {
+            "total_count": 1,
+            "entries": [
+                {
+                    "id": 2841726,
+                    "number": "PC/2026/00002",
+                    "date": "2026-08-11",
+                    "vendor_name": "MEGACOM BEC",
+                    "status": "draft",
+                    "total_debit": 525000.0,
+                    "total_amount": 525000.0,
+                    "lines": [
+                        {
+                            "type": "bill_line",
+                            "product_name": "CART ORI PG810",
+                            "label": "CART ORI PG810",
+                            "quantity": 1.0,
+                            "price": 235000.0,
+                            "subtotal": 235000.0,
+                        },
+                        {
+                            "type": "bill_line",
+                            "product_name": "CART ORI CL811",
+                            "label": "CART ORI CL811",
+                            "quantity": 1.0,
+                            "price": 290000.0,
+                            "subtotal": 290000.0,
+                        },
+                    ],
+                }
+            ],
+            "calculations": {
+                "total_amount": 525000.0,
+            },
+        }
+
+        rendered = _format_single_tool_presentation("fetch_vendor_invoices", tool_result)
+        # Header card attributes
+        self.assertIn("Rincian Dokumen Transaksi: `PC/2026/00002`", rendered)
+        self.assertIn("MEGACOM BEC", rendered)
+        self.assertIn("DRAFT", rendered)
+        # Itemized table
+        self.assertIn("CART ORI PG810", rendered)
+        self.assertIn("Rp 235.000,00", rendered)
+        self.assertIn("CART ORI CL811", rendered)
+        self.assertIn("Rp 290.000,00", rendered)
+        # Total
+        self.assertIn("Total Nilai Transaksi", rendered)
+        self.assertIn("Rp 525.000,00", rendered)
+
+    def test_strict_identifier_guard_stops_retry_loop(self):
+        """Test verifier_node terminates immediately with EMPTY when specific document query returns 0 data."""
+        from app.graph.nodes.verifier import verifier_node
+
+        state = {
+            "user_query": "di dokumen PC/2026/00002 coba berikan detailnya",
+            "detected_domain": "accounting",
+            "detected_tool": "fetch_vendor_invoices",
+            "extracted_params": {"search": "PC/2026/00002", "company_id": 1},
+            "tool_result": {"total_count": 0, "entries": []},
+            "retry_count": 0,
+        }
+
+        result = verifier_node(state)
+        # Strict identifier guard should set EMPTY directly without triggering RETRY
+        self.assertEqual(result.get("verification_status"), "EMPTY")
+        self.assertIsNone(result.get("retry_count"))
+
+    def test_extractor_preserves_company_id_on_document_detail_followup(self):
+        """Test extractor preserves state['company_id']=6 on document detail query without branch."""
+        state = create_initial_state(
+            user_query="di dokumen PC/2026/00002 coba berikan detailnya",
+            company_id=6,  # Preserved from previous turn
+        )
+        state["detected_domain"] = "accounting"
+        state["detected_tool"] = "fetch_vendor_invoices"
+
+        result = extractor_node(state, llm=None, ref_date=date(2026, 11, 8))
+        self.assertEqual(result.get("company_id"), 6)
+        params = result.get("extracted_params", {})
+        self.assertEqual(params.get("search"), "PC/2026/00002")
+        self.assertTrue(params.get("include_lines"))
+
 
 if __name__ == "__main__":
     unittest.main()
