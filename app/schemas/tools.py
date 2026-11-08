@@ -194,6 +194,7 @@ class JournalEntryItem(BaseModel):
     vendor_name: Optional[str] = None
     total_debit: float = 0.0
     total_credit: float = 0.0
+    total_amount: Optional[float] = 0.0
 
 
 class JournalEntriesDataSchema(BaseModel):
@@ -201,6 +202,7 @@ class JournalEntriesDataSchema(BaseModel):
     limit: int
     offset: int
     entries: List[JournalEntryItem] = Field(default_factory=list)
+    calculations: Optional[Dict[str, Any]] = None
 
 
 # ------------------------------------------------------------------------------

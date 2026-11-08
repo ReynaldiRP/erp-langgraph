@@ -80,6 +80,8 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
         # Summary calculations block (DoD TASK-4.3 preservation)
         if calculations:
             lines.append("\n#### Ringkasan Kalkulasi Total:")
+            if "total_amount" in calculations:
+                lines.append(f"- **Total Nilai Transaksi**: {_format_rupiah(calculations['total_amount'])}")
             if "total_unpaid" in calculations:
                 lines.append(f"- **Total Belum Dibayar**: {_format_rupiah(calculations['total_unpaid'])}")
             if "total_paid" in calculations:
