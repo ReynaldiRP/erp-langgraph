@@ -281,3 +281,18 @@ class KnowledgeSearchDataSchema(BaseModel):
 
 class KnowledgeSearchResponseSchema(ERPResponseEnvelope[KnowledgeSearchDataSchema]):
     pass
+
+
+# ==============================================================================
+# 3. Canonical Domain Mapping Registry
+# ==============================================================================
+
+TOOL_DOMAIN_MAP: Dict[str, str] = {
+    "fetch_vendor_invoices": "accounting",
+    "get_account_balance": "accounting",
+    "get_journal_entries": "accounting",
+    "get_stock_level": "inventory",
+    "get_product_info": "inventory",
+    "get_locations": "inventory",
+}
+

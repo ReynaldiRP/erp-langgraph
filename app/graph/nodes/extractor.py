@@ -25,6 +25,7 @@ from app.schemas.tools import (
     ProductInfoFilterSchema,
     VendorInvoiceFilterSchema,
     LocationsFilterSchema,
+    TOOL_DOMAIN_MAP,
 )
 from app.services.llm import get_chat_model
 
@@ -36,15 +37,6 @@ TOOL_SCHEMA_REGISTRY: Dict[str, Type[BaseModel]] = {
     "get_stock_level": StockLevelFilterSchema,
     "get_product_info": ProductInfoFilterSchema,
     "get_locations": LocationsFilterSchema,
-}
-
-TOOL_DOMAIN_MAP: Dict[str, str] = {
-    "fetch_vendor_invoices": "accounting",
-    "get_account_balance": "accounting",
-    "get_journal_entries": "accounting",
-    "get_stock_level": "inventory",
-    "get_product_info": "inventory",
-    "get_locations": "inventory",
 }
 
 

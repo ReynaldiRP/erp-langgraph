@@ -57,30 +57,26 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 - **Location**: `app/graph/nodes/tool_node.py:L252-270`
 - **Resolution**: Wrapped the worker thread coroutine to inspect `client`. If `client` is an active `DjangoCoreClient` (not a mock) with an `httpx.AsyncClient` bound to the outer loop, a fresh `DjangoCoreClient` is initialized inside the worker thread's event loop with identical credentials and configuration, and safely closed with `async with`. Mocks and None clients pass through intact. Verified in `test_tool_node_sync_with_active_client_in_running_loop` and `test_tool_node_sync_with_mock_client_in_running_loop`.
 
+#### [RESOLVED] `_execute_single_tool` mixes exceptions and error tuples
+- **Location**: `app/graph/nodes/tool_node.py:L55-75`
+- **Resolution**: Wrapped handler execution in `try/except` inside `_execute_single_tool`, catching `DjangoCoreClientError` and generic `Exception`, consistently returning `(None, error_str)` or `(result, None)`. Verified in `TestExecuteSingleToolDirect`.
+
+#### [RESOLVED] `TOOL_DOMAIN_MAP` duplicated across modules
+- **Location**: `app/schemas/tools.py:L285-298`, `app/graph/nodes/router.py`, `app/graph/nodes/extractor.py`
+- **Resolution**: Centralized `TOOL_DOMAIN_MAP` in `app/schemas/tools.py` and imported it in `router.py` and `extractor.py`, eliminating dictionary duplication across nodes. Verified in `TestToolDomainMapRegistry`.
+
 ---
 
 ### Group 1: Should Fix
 
-#### 1. `_execute_single_tool` mixes exceptions and error tuples
-- **Location**: `app/graph/nodes/tool_node.py:L22-68`
-- **What this is**: Helper function executing individual tools.
-- **Problem**: Returns `(None, "Tool not registered")` for unregistered tools, but allows `DjangoCoreClientError` to raise directly. Path A and Path B must each handle both exception types and error tuple returns.
-- **Fix**: Catch exceptions inside `_execute_single_tool` and consistently return `(result, error_str)`.
-- **If we skip it**: Tool error handling remains fragmented between `gather` return types and outer `try/except` blocks.
-
-#### 2. `TOOL_DOMAIN_MAP` duplicated across modules
-- **Location**: `app/graph/nodes/router.py:L23`, `app/graph/nodes/extractor.py:L41`
-- **What this is**: Mapping from tool names to ERP domain names (`accounting` / `inventory`).
-- **Problem**: Identical dictionary defined in two separate node files. Adding a new tool requires updating both files.
-- **Fix**: Move `TOOL_DOMAIN_MAP` to `app/schemas/tools.py` alongside `TOOL_SCHEMA_REGISTRY`.
-- **If we skip it**: Future tool registrations risk becoming out of sync between routing and extraction.
+*None (all resolved).*
 
 ---
 
 ### Group 2: Nice to Have
 
 #### 3. Empty state hints only display the first tool's filters
-- **Location**: `app/graph/nodes/synthesizer.py:L273-287`
+- **Location**: `app/graph/nodes/synthesizer.py`
 - **What this is**: Helper showing which filters were used when 0 records are found after retries.
 - **Problem**: Reads only `state.get("extracted_params")`, ignoring parameters from subsequent tools in `active_tools`.
 - **Fix**: Iterate through all `active_tools` params to build the filter hints list.
@@ -89,6 +85,7 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 ---
 
 ## Summary
-- **Verdict**: Healthy. All critical (Must Fix) bugs and high-priority cross-thread/rendering defects resolved (386 tests passing with zero failures).
-- **Lean**: -8 lines, -0 dependencies possible.
+- **Verdict**: Healthy. All critical (Must Fix) bugs, cross-thread/rendering defects, and tool execution error handling consolidated.
+- **Lean**: -16 lines, -0 dependencies possible.
+- **Not checked**: Direct live network calls to external Django ERP instances (mocked client used during test execution).
 - **Not checked**: Direct live network calls to external Django ERP instances (mocked client used during test execution).
