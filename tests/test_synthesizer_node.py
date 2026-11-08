@@ -140,6 +140,22 @@ class TestSynthesizerFormatting(unittest.TestCase):
         self.assertIn("Khayalan", output)
         self.assertIn("maksimal 2x", output)
 
+    def test_format_empty_status_multi_tool_displays_all_filters(self):
+        """Empty status in multi-tool execution includes filter hints from all active tools."""
+        state = create_initial_state(user_query="Cek stok Kertas A4 dan tagihan vendor PT Maju")
+        state["is_multi_tool"] = True
+        state["verification_status"] = "EMPTY"
+        state["extracted_params"] = {"code": "KERTAS-A4"}
+        state["active_tools"] = [
+            {"tool": "get_stock_level", "domain": "inventory", "params": {"code": "KERTAS-A4"}},
+            {"tool": "fetch_vendor_invoices", "domain": "accounting", "params": {"vendor_name": "PT Maju"}},
+        ]
+
+        output = format_deterministic_answer(state)
+        self.assertIn("Data Tidak Ditemukan", output)
+        self.assertIn("KERTAS-A4", output)
+        self.assertIn("PT Maju", output)
+
     def test_format_error_status(self):
         """Error status provides polite technical troubleshooting advice."""
         state = create_initial_state(user_query="Cek jurnal")

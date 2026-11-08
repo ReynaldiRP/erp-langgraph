@@ -49,6 +49,10 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 - **Location**: `app/graph/nodes/tool_node.py`, `app/graph/nodes/synthesizer.py`
 - **Resolution**: When identical tools are planned within `active_tools`, `tool_node` partitions outputs using composite keys (`f"{tool_name}_{idx}"`) and attaches results to plan dictionaries. `synthesizer_node` reads each plan's distinct result, guaranteeing all products or queries render without collisions.
 
+#### [RESOLVED] Empty state hints only display the first tool's filters
+- **Location**: `app/graph/nodes/synthesizer.py:L271-295`
+- **Resolution**: Iterated through all plan parameters in `active_tools` in addition to `extracted_params`, displaying filter hints from all planned tools without duplicate keys. Verified in `test_format_empty_status_multi_tool_displays_all_filters`.
+
 ---
 
 ### Group 1: Should Fix
@@ -83,18 +87,7 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 
 ---
 
-### Group 2: Nice to Have
-
-#### 5. Empty state hints only display the first tool's filters
-- **Location**: `app/graph/nodes/synthesizer.py:L271-285`
-- **What this is**: Helper showing which filters were used when 0 records are found after retries.
-- **Problem**: Reads only `state.get("extracted_params")`, ignoring parameters from subsequent tools in `active_tools`.
-- **Fix**: Iterate through all `active_tools` params to build the filter hints list.
-- **If we skip it**: When all tools return empty, the message only cites the first tool's filter settings.
-
----
-
 ## Summary
-- **Verdict**: Healthy. All critical (Must Fix) bugs resolved, and all known fallback extractor defects resolved (382 tests passing with zero failures, zero expected failures).
-- **Lean**: -12 lines, -0 dependencies possible.
+- **Verdict**: Healthy. All critical (Must Fix) bugs resolved, and multi-tool empty state filter hints comprehensive (383 tests passing with zero failures).
+- **Lean**: -10 lines, -0 dependencies possible.
 - **Not checked**: Direct live network calls to external Django ERP instances (mocked client used during test execution).
