@@ -276,6 +276,12 @@ def _fallback_extract_vendor_invoice(
             if v_name.lower() not in VENDOR_NAME_STOPWORDS:
                 params["vendor_name"] = v_name
 
+    # Document number detection (e.g. PC/2026/00002, BDG/JE/2026/00009, INV/2026/001)
+    doc_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", cleaned)
+    if doc_match:
+        params["search"] = doc_match.group(1).upper()
+        params["include_lines"] = True
+
     query_lower = (query or "").lower()
     if "belum lunas" in query_lower or "unpaid" in query_lower or "belum dibayar" in query_lower:
         params["status"] = "unpaid"
@@ -480,9 +486,10 @@ def _fallback_extract_journal_entries(
     params: Dict[str, Any] = {}
     cleaned = query.strip()
 
-    entry_match = re.search(r"\b(JE/\d{4}/\d+)\b", cleaned, re.IGNORECASE)
+    entry_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", cleaned, re.IGNORECASE)
     if entry_match:
         params["entry_number"] = entry_match.group(1).upper()
+        params["include_lines"] = True
 
     query_lower = cleaned.lower()
     if "draft" in query_lower:
@@ -772,19 +779,39 @@ def _extract_single_tool_params(
         if v_clean:
             extracted_dict["vendor_name"] = v_clean
 
-    # 5. Staged Retry Relaxation
+    # Document number detection & include_lines
+    doc_m = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", sub_query) or re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", user_query)
+    if doc_m:
+        doc_code = doc_m.group(1).upper()
+        if tool_name in ("fetch_vendor_invoices", "get_journal_entries"):
+            if not extracted_dict.get("search") and not extracted_dict.get("entry_number"):
+                if tool_name == "get_journal_entries":
+                    extracted_dict["entry_number"] = doc_code
+                else:
+                    extracted_dict["search"] = doc_code
+            extracted_dict["include_lines"] = True
+
+    if any(kw in user_query.lower() for kw in ("detail", "rincian", "item", "isi")) and tool_name in ("fetch_vendor_invoices", "get_journal_entries"):
+        extracted_dict["include_lines"] = True
+
+    # 5. Staged Retry Relaxation (Strict Identifier Guard: do not pop document number / code)
+    has_doc_identifier = bool(
+        extracted_dict.get("entry_number")
+        or (extracted_dict.get("search") and re.search(r"\b[A-Za-z0-9_\-]+/\d{4}/\d+\b", str(extracted_dict.get("search"))))
+    )
     if retry_count == 1:
         extracted_dict.pop("date_from", None)
         extracted_dict.pop("date_to", None)
     elif retry_count >= 2:
         extracted_dict.pop("date_from", None)
         extracted_dict.pop("date_to", None)
-        if tool_name == "fetch_vendor_invoices":
-            extracted_dict.pop("vendor_name", None)
-            extracted_dict.pop("search", None)
-        elif tool_name == "get_journal_entries":
-            extracted_dict.pop("status", None)
-            extracted_dict.pop("search", None)
+        if not has_doc_identifier:
+            if tool_name == "fetch_vendor_invoices":
+                extracted_dict.pop("vendor_name", None)
+                extracted_dict.pop("search", None)
+            elif tool_name == "get_journal_entries":
+                extracted_dict.pop("status", None)
+                extracted_dict.pop("search", None)
 
     # 6. Schema Filtering / Validation
     try:
@@ -896,5 +923,7 @@ def extractor_node(
         if working_active_tools:
             working_active_tools[0].setdefault("params", {})["company_id"] = branch_co_id
             primary_params["company_id"] = branch_co_id
+    elif state.get("company_id") is not None:
+        result_update["company_id"] = state.get("company_id")
 
     return result_update

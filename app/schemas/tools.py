@@ -55,6 +55,7 @@ class JournalEntriesFilterSchema(BaseModel):
     date_to: Optional[str] = Field(None, description="Filter entries on or before YYYY-MM-DD")
     account_id: Optional[int] = Field(None, description="Filter entries containing items for this account ID")
     search: Optional[str] = Field(None, description="Keyword search matching document number or description")
+    include_lines: Optional[bool] = Field(None, description="Include line items detail for each journal entry")
     limit: int = Field(50, ge=1, le=200, description="Page limit (1-200)")
     offset: int = Field(0, ge=0, description="Pagination offset")
 
@@ -112,6 +113,7 @@ class VendorInvoiceFilterSchema(BaseModel):
     date_to: Optional[str] = Field(None, description="Tanggal akhir transaksi (YYYY-MM-DD)")
     status: Optional[str] = Field(None, description="Status tagihan: 'draft', 'posted', 'paid', 'unpaid', dll.")
     search: Optional[str] = Field(None, description="Pencarian bebas nomor invoice / referensi / catatan")
+    include_lines: Optional[bool] = Field(None, description="Include line items detail for each invoice")
     company_id: Optional[int] = Field(None, description="Company ID (scoping multi-company)")
     limit: int = Field(50, ge=1, le=200, description="Batas jumlah record (1-200)")
     offset: int = Field(0, ge=0, description="Pagination offset")
@@ -137,6 +139,7 @@ class VendorInvoiceFilterSchema(BaseModel):
             date_from=self.date_from,
             date_to=self.date_to,
             search=search_term,
+            include_lines=self.include_lines,
             limit=self.limit,
             offset=self.offset,
         )
@@ -195,6 +198,7 @@ class JournalEntryItem(BaseModel):
     total_debit: float = 0.0
     total_credit: float = 0.0
     total_amount: Optional[float] = 0.0
+    lines: Optional[List[Dict[str, Any]]] = None
 
 
 class JournalEntriesDataSchema(BaseModel):

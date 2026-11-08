@@ -84,6 +84,11 @@ def main():
                 thread_id=session_id,
             )
 
+            # Session-sticky company resolution update
+            resolved_co = final_state.get("company_id")
+            if resolved_co and resolved_co != current_company_id:
+                current_company_id = resolved_co
+
             domain = final_state.get("detected_domain")
             tool = final_state.get("detected_tool")
             status = final_state.get("verification_status")

@@ -204,13 +204,24 @@ async def arun_workflow(
         Final resulting AgentState dictionary.
     """
     active_graph = graph or default_workflow_graph
+    config = {"configurable": {"thread_id": thread_id or "default_session"}}
+
+    # Multi-turn company ID persistence across turns in the same thread session
+    effective_company_id = company_id
+    if effective_company_id is None or effective_company_id == settings.DEFAULT_COMPANY_ID:
+        try:
+            checkpoint = await active_graph.aget_state(config)
+            if checkpoint and checkpoint.values and checkpoint.values.get("company_id"):
+                effective_company_id = checkpoint.values["company_id"]
+        except Exception:
+            pass
+
     initial_state = create_initial_state(
         user_query=user_query,
         user_token=user_token,
-        company_id=company_id,
+        company_id=effective_company_id,
     )
 
-    config = {"configurable": {"thread_id": thread_id or "default_session"}}
     final_state = await active_graph.ainvoke(initial_state, config=config)
     return final_state
 

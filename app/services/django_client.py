@@ -103,9 +103,9 @@ class DjangoCoreClient:
         client: Optional[httpx.AsyncClient] = None,
     ):
         self.base_url = (base_url or settings.ERP_BASE_URL).rstrip("/")
-        self.token = token or settings.ERP_API_TOKEN
-        self.username = username or settings.ERP_USERNAME
-        self.password = password or settings.ERP_PASSWORD
+        self.token = (token or settings.ERP_API_TOKEN or "").strip() or None
+        self.username = (username or settings.ERP_USERNAME or "").strip() or None
+        self.password = (password or settings.ERP_PASSWORD or "").strip() or None
         self.default_company_id = default_company_id or settings.DEFAULT_COMPANY_ID
         self.timeout = timeout if timeout is not None else settings.REQUEST_TIMEOUT_SEC
         self.service_key = service_key or settings.ERP_API_TOKEN

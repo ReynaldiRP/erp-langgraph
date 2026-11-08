@@ -4,6 +4,7 @@ Evaluates tool execution results, implements an automated retry/correction cycle
 for empty query results (with maximum 2 retries), and provides conditional edge routing.
 """
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from app.graph.state import AgentState, VerificationStatus
@@ -268,6 +269,23 @@ def verifier_node(state: AgentState) -> Dict[str, Any]:
         logger.info(f"Verification successful: {records_count} record(s) found.")
         return {
             "verification_status": "VALID",
+            "retry_instruction": preserved_replay,
+        }
+
+    # Strict Identifier Guard: If querying a specific document number and 0 records found,
+    # terminate immediately with EMPTY to avoid wasting retries on hallucinated relaxations.
+    extracted_params = state.get("extracted_params") or {}
+    has_specific_document_identifier = bool(
+        extracted_params.get("entry_number")
+        or (
+            extracted_params.get("search")
+            and re.search(r"\b[A-Za-z0-9_\-]+/\d{4}/\d+\b", str(extracted_params["search"]))
+        )
+    )
+    if has_specific_document_identifier:
+        logger.info("Specific document identifier search returned 0 records -> EMPTY (Strict Identifier Guard).")
+        return {
+            "verification_status": "EMPTY",
             "retry_instruction": preserved_replay,
         }
 
