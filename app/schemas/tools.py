@@ -48,6 +48,8 @@ class JournalEntriesFilterSchema(BaseModel):
     company_id: Optional[int] = Field(None, description="Company ID (defaults to default company)")
     journal_id: Optional[int] = Field(None, description="Filter by specific journal book ID")
     entry_number: Optional[str] = Field(None, description="Exact or partial journal entry number (e.g. 'JE/2026/001')")
+    vendor_id: Optional[int] = Field(None, description="Filter by specific vendor ID")
+    vendor_name: Optional[str] = Field(None, description="Filter by vendor or supplier name")
     status: Optional[str] = Field(None, description="Status filter: 'draft', 'posted', 'cancel', etc.")
     date_from: Optional[str] = Field(None, description="Filter entries on or after YYYY-MM-DD")
     date_to: Optional[str] = Field(None, description="Filter entries on or before YYYY-MM-DD")
@@ -126,9 +128,11 @@ class VendorInvoiceFilterSchema(BaseModel):
 
     def to_journal_filter(self) -> "JournalEntriesFilterSchema":
         """Convert to standard JournalEntriesFilterSchema payload for ERP Django Core."""
-        search_term = self.vendor_name or self.search
+        search_term = self.search or self.vendor_name
         return JournalEntriesFilterSchema(
             company_id=self.company_id,
+            vendor_name=self.vendor_name,
+            vendor_id=self.vendor_id,
             status=self.status,
             date_from=self.date_from,
             date_to=self.date_to,
