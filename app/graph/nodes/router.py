@@ -16,18 +16,10 @@ from pydantic import BaseModel, Field, model_validator
 from app.core.config import settings
 from app.core.context import trim_conversation_messages
 from app.graph.state import AgentState, ToolCallPlan
+from app.schemas.tools import TOOL_DOMAIN_MAP
 from app.services.llm import get_chat_model
 
 logger = logging.getLogger("router_node")
-
-TOOL_DOMAIN_MAP: Dict[str, str] = {
-    "fetch_vendor_invoices": "accounting",
-    "get_account_balance": "accounting",
-    "get_journal_entries": "accounting",
-    "get_stock_level": "inventory",
-    "get_product_info": "inventory",
-    "get_locations": "inventory",
-}
 
 
 class PlannedToolCall(BaseModel):

@@ -56,11 +56,18 @@ async def _execute_single_tool(
     if not handler:
         return None, f"Tool '{tool_name}' not registered in dispatch map"
 
-    raw_result = await handler(
-        params=clean_params,
-        user_token=user_token,
-        company_id=target_company_id,
-    )
+    try:
+        raw_result = await handler(
+            params=clean_params,
+            user_token=user_token,
+            company_id=target_company_id,
+        )
+    except DjangoCoreClientError as err:
+        logger.warning(f"DjangoCoreClientError in _execute_single_tool for tool '{tool_name}': {err}")
+        return None, str(err)
+    except Exception as exc:
+        logger.error(f"Unexpected error in _execute_single_tool for tool '{tool_name}': {exc}", exc_info=True)
+        return None, f"Unexpected execution error: {str(exc)}"
 
     if isinstance(raw_result, dict):
         loc_label = clean_params.get("matched_location_name") or clean_params.get("location_name")
