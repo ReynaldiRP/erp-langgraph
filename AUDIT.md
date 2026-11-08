@@ -65,6 +65,10 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 - **Location**: `app/schemas/tools.py:L285-298`, `app/graph/nodes/router.py`, `app/graph/nodes/extractor.py`
 - **Resolution**: Centralized `TOOL_DOMAIN_MAP` in `app/schemas/tools.py` and imported it in `router.py` and `extractor.py`, eliminating dictionary duplication across nodes. Verified in `TestToolDomainMapRegistry`.
 
+#### [RESOLVED] Empty state hints only display the first tool's filters
+- **Location**: `app/graph/nodes/synthesizer.py:L271-295`
+- **Resolution**: Iterated through all plan parameters in `active_tools` in addition to `extracted_params`, displaying filter hints from all planned tools without duplicate keys. Verified in `test_format_empty_status_multi_tool_displays_all_filters`.
+
 ---
 
 ### Group 1: Should Fix
@@ -75,17 +79,12 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 
 ### Group 2: Nice to Have
 
-#### 3. Empty state hints only display the first tool's filters
-- **Location**: `app/graph/nodes/synthesizer.py`
-- **What this is**: Helper showing which filters were used when 0 records are found after retries.
-- **Problem**: Reads only `state.get("extracted_params")`, ignoring parameters from subsequent tools in `active_tools`.
-- **Fix**: Iterate through all `active_tools` params to build the filter hints list.
-- **If we skip it**: When all tools return empty, the message only cites the first tool's filter settings.
+*None (all resolved).*
 
 ---
 
 ## Summary
-- **Verdict**: Healthy. All critical (Must Fix) bugs, cross-thread/rendering defects, and tool execution error handling consolidated.
+- **Verdict**: Healthy. All critical (Must Fix) bugs resolved, tool execution error handling consolidated, and multi-tool empty state filter hints comprehensive.
 - **Lean**: -16 lines, -0 dependencies possible.
 - **Not checked**: Direct live network calls to external Django ERP instances (mocked client used during test execution).
 - **Not checked**: Direct live network calls to external Django ERP instances (mocked client used during test execution).
