@@ -120,6 +120,45 @@ class TestBranchAndVendorExtractor(unittest.TestCase):
         self.assertIn("posted", ALLOWED_JOURNAL_STATUSES)
         self.assertIn("unpaid", ALLOWED_JOURNAL_STATUSES)
 
+    def test_synthesizer_renders_total_amount_calculation(self):
+        """Test synthesizer renders total_amount in summary calculation block."""
+        from app.graph.nodes.synthesizer import _format_single_tool_presentation
+
+        tool_result = {
+            "total_count": 2,
+            "entries": [
+                {
+                    "id": 2841726,
+                    "number": "PC/2026/00002",
+                    "date": "2026-08-11",
+                    "vendor_name": "MEGACOM BEC",
+                    "total_debit": 525000.0,
+                    "total_credit": 525000.0,
+                    "status": "draft",
+                },
+                {
+                    "id": 2840690,
+                    "number": "BDG/JE/2026/00009",
+                    "date": "2026-08-08",
+                    "vendor_name": "MEGACOM BEC",
+                    "total_debit": 280000.0,
+                    "total_credit": 280000.0,
+                    "status": "draft",
+                },
+            ],
+            "calculations": {
+                "total_amount": 805000.0,
+            },
+        }
+
+        rendered = _format_single_tool_presentation("fetch_vendor_invoices", tool_result)
+        self.assertIn("PC/2026/00002", rendered)
+        self.assertIn("Rp 525.000,00", rendered)
+        self.assertIn("BDG/JE/2026/00009", rendered)
+        self.assertIn("Rp 280.000,00", rendered)
+        self.assertIn("Total Nilai Transaksi", rendered)
+        self.assertIn("Rp 805.000,00", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
