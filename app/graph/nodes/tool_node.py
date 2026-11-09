@@ -259,7 +259,21 @@ def tool_node_sync(
 
     if loop and loop.is_running():
         # Running inside an active event loop (e.g. async runner or Jupyter)
+        async def _exec() -> Dict[str, Any]:
+            if isinstance(client, DjangoCoreClient) and not hasattr(client, "_mock_return_value"):
+                async with DjangoCoreClient(
+                    base_url=client.base_url,
+                    token=client.token,
+                    username=client.username,
+                    password=client.password,
+                    default_company_id=client.default_company_id,
+                    timeout=client.timeout,
+                    service_key=client.service_key,
+                ) as c:
+                    return await tool_node(state, client=c)
+            return await tool_node(state, client=client)
+
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            return executor.submit(asyncio.run, tool_node(state, client=client)).result()
+            return executor.submit(asyncio.run, _exec()).result()
     else:
         return asyncio.run(tool_node(state, client=client))

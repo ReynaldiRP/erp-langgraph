@@ -333,6 +333,44 @@ class TestSynchronousWrapperAndPipelineChain(unittest.TestCase):
         self.assertIn("calculations", result["tool_result"])
         self.assertEqual(result["tool_result"]["calculations"]["grand_total"], 5000000.0)
 
+    def test_tool_node_sync_with_mock_client_in_running_loop(self):
+        """tool_node_sync safely executes with a mock client inside an active running loop."""
+        import asyncio
+        async def _run_test():
+            mock_payload = {
+                "entries": [{"id": 1, "vendor_name": "PT Sumber Makmur"}],
+                "calculations": {"grand_total": 1000000.0},
+            }
+            mock_client = MagicMock(spec=DjangoCoreClient)
+            mock_client.fetch_vendor_invoices = AsyncMock(return_value=mock_payload)
+
+            state = create_initial_state("Cek tagihan vendor PT Sumber Makmur")
+            state["detected_tool"] = "fetch_vendor_invoices"
+            state["extracted_params"] = {"vendor_name": "PT Sumber Makmur"}
+
+            result = tool_node_sync(state, client=mock_client)
+            self.assertEqual(result["verification_status"], "VALID")
+            self.assertEqual(result["tool_result"]["calculations"]["grand_total"], 1000000.0)
+
+        asyncio.run(_run_test())
+
+    def test_tool_node_sync_with_active_client_in_running_loop(self):
+        """tool_node_sync safely handles an active DjangoCoreClient inside a running event loop."""
+        import asyncio
+        import httpx
+
+        async def _run_test():
+            async with httpx.AsyncClient() as raw_http:
+                client = DjangoCoreClient(token="test_token", client=raw_http)
+                state = create_initial_state("Cek stok")
+                state["detected_tool"] = "get_stock_level"
+                state["extracted_params"] = {"code": "TEST"}
+                # Must execute without cross-loop RuntimeError
+                result = tool_node_sync(state, client=client)
+                self.assertIn("verification_status", result)
+
+        asyncio.run(_run_test())
+
     def test_three_node_pipeline_chain(self):
         """
         Integrates router_node -> extractor_node -> tool_node in StateGraph

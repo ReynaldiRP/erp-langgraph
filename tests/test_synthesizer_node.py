@@ -65,6 +65,20 @@ class TestSynthesizerFormatting(unittest.TestCase):
         self.assertIn("Rp 8.500.000,00", output)
         self.assertIn("Ringkasan Kalkulasi Total", output)
 
+    def test_format_vendor_invoices_empty_entries(self):
+        """Empty invoice entries renders fallback message instead of empty heading."""
+        state = create_initial_state(user_query="Tagihan vendor PT Sumber Makmur")
+        state["detected_domain"] = "accounting"
+        state["detected_tool"] = "fetch_vendor_invoices"
+        state["verification_status"] = "VALID"
+        state["tool_result"] = {
+            "total_count": 0,
+            "entries": [],
+            "calculations": {},
+        }
+        output = format_deterministic_answer(state)
+        self.assertIn("Tidak ada transaksi tercatat pada periode ini.", output)
+
     def test_format_account_balance(self):
         """Account balance summary formatting."""
         state = create_initial_state(user_query="Saldo kas")
