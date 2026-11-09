@@ -226,6 +226,33 @@ async def arun_workflow(
     return final_state
 
 
+async def astream_workflow_steps(
+    user_query: str,
+    user_token: Optional[str] = None,
+    company_id: Optional[int] = None,
+    thread_id: Optional[str] = None,
+    graph: Optional[Any] = None,
+):
+    """
+    Asynchronously stream individual node completion events from the workflow StateGraph.
+    Yields tuples of (node_name, node_update_dict, accumulated_state_dict).
+    """
+    active_graph = graph or default_workflow_graph
+    initial_state = create_initial_state(
+        user_query=user_query,
+        user_token=user_token,
+        company_id=company_id,
+    )
+    config = {"configurable": {"thread_id": thread_id or "default_session"}}
+    accumulated_state = dict(initial_state)
+
+    async for chunk in active_graph.astream(initial_state, config=config, stream_mode="updates"):
+        for node_name, update in chunk.items():
+            if isinstance(update, dict):
+                accumulated_state.update(update)
+            yield (node_name, update, accumulated_state)
+
+
 _WORKFLOW_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _EXECUTOR_LOCK = threading.Lock()
 
@@ -266,24 +293,41 @@ def run_workflow_sync(
     company_id: Optional[int] = None,
     thread_id: Optional[str] = None,
     graph: Optional[Any] = None,
+    on_node_finish: Optional[Any] = None,
 ) -> AgentState:
     """
     Synchronously run the compiled workflow graph (safe for CLI and test runners).
     Handles environments with or without an active asyncio event loop.
     Reuses a cached module-level ThreadPoolExecutor when called within an active loop.
+    Supports optional on_node_finish callback for live step-by-step progress tracking.
     """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
 
-    coro = arun_workflow(
-        user_query=user_query,
-        user_token=user_token,
-        company_id=company_id,
-        thread_id=thread_id,
-        graph=graph,
-    )
+    if on_node_finish:
+        async def _run_streaming():
+            acc: AgentState = {}
+            async for node_name, update, acc_state in astream_workflow_steps(
+                user_query=user_query,
+                user_token=user_token,
+                company_id=company_id,
+                thread_id=thread_id,
+                graph=graph,
+            ):
+                on_node_finish(node_name, update, acc_state)
+                acc = acc_state
+            return acc
+        coro = _run_streaming()
+    else:
+        coro = arun_workflow(
+            user_query=user_query,
+            user_token=user_token,
+            company_id=company_id,
+            thread_id=thread_id,
+            graph=graph,
+        )
 
     if loop and loop.is_running():
         executor = get_workflow_executor()

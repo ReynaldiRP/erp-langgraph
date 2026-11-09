@@ -121,6 +121,8 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
                 debit = _format_rupiah(item.get("total_debit", 0.0))
                 st = item.get("status") or item.get("state") or "posted"
                 lines.append(f"| {idx} | `{num}` | {tgl} | {vendor} | {debit} | {st.upper()} |")
+        else:
+            lines.append("Tidak ada transaksi tercatat pada periode ini.")
 
         # Summary calculations block (DoD TASK-4.3 preservation)
         if calculations:
@@ -299,13 +301,20 @@ def format_deterministic_answer(state: AgentState) -> str:
     # 3. General Domain / Guardrail Inquiries
     if (domain == "general" or not tool) and not is_multi:
         query_lower = user_query.lower()
-        if any(term in query_lower for term in ("pelanggan", "customer", "piutang")):
+        billing_terms = (
+            "pelanggan", "customer", "piutang", "tagihan",
+            "faktur", "invoice", "bill", "kuitansi", "bon"
+        )
+        if any(term in query_lower for term in billing_terms):
             return (
-                "### Informasi Tagihan Pelanggan (Customer)\n\n"
-                "Mohon maaf, sistem AI Orchestrator saat ini dikhususkan untuk **tagihan vendor / pemasok**, "
+                "### Informasi Tagihan Pelanggan (Customer) & Panduan Faktur\n\n"
+                "Sistem AI Orchestrator saat ini dikhususkan untuk **tagihan vendor / pemasok** (Hutang Usaha), "
                 "buku jurnal, saldo akun kas, dan inventaris barang.\n\n"
-                "Untuk memeriksa tagihan atau piutang pelanggan, silakan akses modul **Penjualan (Sales / Invoicing)** "
-                "secara langsung di aplikasi FastPrint ERP."
+                "**Panduan & Solusi**:\n"
+                "- **Tagihan / Piutang Pelanggan**: Untuk memeriksa transaksi atau tagihan pelanggan (seperti penjualan toko/mainstore), "
+                "silakan akses modul **Penjualan (Sales / Invoicing)** atau POS secara langsung di aplikasi FastPrint ERP.\n"
+                "- **Jika Rekanan adalah Vendor**: Jika pihak yang Anda maksud adalah pemasok/vendor barang, sertakan kata `'vendor'` "
+                "(contoh: `coba cek tagihan vendor [Nama Vendor]`)."
             )
         return (
             "Halo! Saya adalah Asisten AI FastPrint ERP. Saya dapat membantu Anda memeriksa:\n"
@@ -318,18 +327,36 @@ def format_deterministic_answer(state: AgentState) -> str:
 
     # 3. Empty Status (No Data Found after Max Retries)
     if status == "EMPTY":
-        params = state.get("extracted_params") or {}
-        filter_hints = []
-        if params.get("vendor_name"):
-            filter_hints.append(f"Vendor: **{params['vendor_name']}**")
-        if params.get("date_from") or params.get("date_to"):
-            filter_hints.append(f"Periode: **{params.get('date_from', '-')} s/d {params.get('date_to', '-')}**")
-        if params.get("account_code"):
-            filter_hints.append(f"Kode Akun: **{params['account_code']}**")
-        if params.get("code"):
-            filter_hints.append(f"Produk / SKU: **{params['code']}**")
-        elif params.get("product_id"):
-            filter_hints.append(f"Product ID: **{params['product_id']}**")
+        all_params: List[Dict[str, Any]] = []
+        if state.get("extracted_params"):
+            all_params.append(state["extracted_params"])
+        for plan in state.get("active_tools") or []:
+            if isinstance(plan, dict) and plan.get("params"):
+                all_params.append(plan["params"])
+
+        filter_hints: List[str] = []
+        seen_hints = set()
+
+        def _add_hint(hint: str) -> None:
+            if hint not in seen_hints:
+                seen_hints.add(hint)
+                filter_hints.append(hint)
+
+        for p in all_params:
+            if not isinstance(p, dict):
+                continue
+            if p.get("vendor_name"):
+                _add_hint(f"Vendor: **{p['vendor_name']}**")
+            if p.get("date_from") or p.get("date_to"):
+                _add_hint(f"Periode: **{p.get('date_from', '-')} s/d {p.get('date_to', '-')}**")
+            if p.get("account_code"):
+                _add_hint(f"Kode Akun: **{p['account_code']}**")
+            if p.get("code"):
+                _add_hint(f"Produk / SKU: **{p['code']}**")
+            elif p.get("product_id"):
+                _add_hint(f"Product ID: **{p['product_id']}**")
+            if p.get("location_name"):
+                _add_hint(f"Lokasi: **{p['location_name']}**")
 
         hint_str = f" ({', '.join(filter_hints)})" if filter_hints else ""
         return (

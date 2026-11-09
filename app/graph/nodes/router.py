@@ -16,18 +16,10 @@ from pydantic import BaseModel, Field, model_validator
 from app.core.config import settings
 from app.core.context import trim_conversation_messages
 from app.graph.state import AgentState, ToolCallPlan
+from app.schemas.tools import TOOL_DOMAIN_MAP
 from app.services.llm import get_chat_model
 
 logger = logging.getLogger("router_node")
-
-TOOL_DOMAIN_MAP: Dict[str, str] = {
-    "fetch_vendor_invoices": "accounting",
-    "get_account_balance": "accounting",
-    "get_journal_entries": "accounting",
-    "get_stock_level": "inventory",
-    "get_product_info": "inventory",
-    "get_locations": "inventory",
-}
 
 
 class PlannedToolCall(BaseModel):
@@ -467,6 +459,29 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
         or not candidates
     )
     if has_customer_billing and not has_vendor and not has_purchase_invoice and not is_rag:
+        return {
+            "detected_domain": "general",
+            "detected_tool": None,
+            "query_mode": "general",
+            "rag_query": None,
+            "is_multi_tool": False,
+            "detected_domains": ["general"],
+            "detected_tools": [],
+            "active_tools": [],
+        }
+
+    # 1.1 Fast-Path Non-Vendor Billing Guardrail (Customer / Retail / Ambiguous Billing)
+    billing_keywords = (
+        "tagihan",
+        "faktur",
+        "invoice",
+        "bill",
+        "piutang",
+        "kuitansi",
+        "bon",
+    )
+    has_billing_kw = any(term in cleaned for term in billing_keywords)
+    if has_billing_kw and not has_vendor and not has_purchase_invoice and not candidates and not is_rag:
         return {
             "detected_domain": "general",
             "detected_tool": None,

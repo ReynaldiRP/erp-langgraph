@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, START, END
 from app.graph.state import create_initial_state, AgentState
 from app.graph.nodes.router import router_node
 from app.graph.nodes.extractor import extractor_node
-from app.graph.nodes.tool_node import tool_node, tool_node_sync
+from app.graph.nodes.tool_node import tool_node, tool_node_sync, _execute_single_tool
 from app.services.django_client import (
     DjangoCoreClient,
     DjangoAuthError,
@@ -333,6 +333,44 @@ class TestSynchronousWrapperAndPipelineChain(unittest.TestCase):
         self.assertIn("calculations", result["tool_result"])
         self.assertEqual(result["tool_result"]["calculations"]["grand_total"], 5000000.0)
 
+    def test_tool_node_sync_with_mock_client_in_running_loop(self):
+        """tool_node_sync safely executes with a mock client inside an active running loop."""
+        import asyncio
+        async def _run_test():
+            mock_payload = {
+                "entries": [{"id": 1, "vendor_name": "PT Sumber Makmur"}],
+                "calculations": {"grand_total": 1000000.0},
+            }
+            mock_client = MagicMock(spec=DjangoCoreClient)
+            mock_client.fetch_vendor_invoices = AsyncMock(return_value=mock_payload)
+
+            state = create_initial_state("Cek tagihan vendor PT Sumber Makmur")
+            state["detected_tool"] = "fetch_vendor_invoices"
+            state["extracted_params"] = {"vendor_name": "PT Sumber Makmur"}
+
+            result = tool_node_sync(state, client=mock_client)
+            self.assertEqual(result["verification_status"], "VALID")
+            self.assertEqual(result["tool_result"]["calculations"]["grand_total"], 1000000.0)
+
+        asyncio.run(_run_test())
+
+    def test_tool_node_sync_with_active_client_in_running_loop(self):
+        """tool_node_sync safely handles an active DjangoCoreClient inside a running event loop."""
+        import asyncio
+        import httpx
+
+        async def _run_test():
+            async with httpx.AsyncClient() as raw_http:
+                client = DjangoCoreClient(token="test_token", client=raw_http)
+                state = create_initial_state("Cek stok")
+                state["detected_tool"] = "get_stock_level"
+                state["extracted_params"] = {"code": "TEST"}
+                # Must execute without cross-loop RuntimeError
+                result = tool_node_sync(state, client=client)
+                self.assertIn("verification_status", result)
+
+        asyncio.run(_run_test())
+
     def test_three_node_pipeline_chain(self):
         """
         Integrates router_node -> extractor_node -> tool_node in StateGraph
@@ -395,6 +433,59 @@ class TestSynchronousWrapperAndPipelineChain(unittest.TestCase):
         self.assertIsNotNone(final_state["tool_result"])
         self.assertIn("calculations", final_state["tool_result"])
         self.assertEqual(final_state["tool_result"]["calculations"]["grand_total"], 12000000.0)
+
+
+class TestExecuteSingleToolDirect(unittest.IsolatedAsyncioTestCase):
+    """Test suite validating _execute_single_tool uniform error tuple handling."""
+
+    async def test_execute_single_tool_unregistered_tool(self):
+        """Unregistered tool returns (None, error_str)."""
+        mock_client = MagicMock(spec=DjangoCoreClient)
+        res, err = await _execute_single_tool(
+            tool_name="unregistered_tool",
+            params={},
+            erp_client=mock_client,
+            user_token=None,
+            default_company_id=1,
+            dispatch_map={},
+        )
+        self.assertIsNone(res)
+        self.assertIn("not registered in dispatch map", err)
+
+    async def test_execute_single_tool_catches_django_client_error(self):
+        """DjangoCoreClientError is caught and returned as (None, error_str)."""
+        mock_handler = AsyncMock(side_effect=DjangoCoreClientError("Custom ERP 500 error", status_code=500))
+        dispatch_map = {"my_tool": mock_handler}
+        mock_client = MagicMock(spec=DjangoCoreClient)
+
+        res, err = await _execute_single_tool(
+            tool_name="my_tool",
+            params={"search": "abc"},
+            erp_client=mock_client,
+            user_token=None,
+            default_company_id=1,
+            dispatch_map=dispatch_map,
+        )
+        self.assertIsNone(res)
+        self.assertEqual(err, "Custom ERP 500 error")
+
+    async def test_execute_single_tool_catches_unexpected_exception(self):
+        """Unexpected exception is caught and returned as (None, error_str)."""
+        mock_handler = AsyncMock(side_effect=ValueError("Simulated bad value"))
+        dispatch_map = {"my_tool": mock_handler}
+        mock_client = MagicMock(spec=DjangoCoreClient)
+
+        res, err = await _execute_single_tool(
+            tool_name="my_tool",
+            params={},
+            erp_client=mock_client,
+            user_token=None,
+            default_company_id=1,
+            dispatch_map=dispatch_map,
+        )
+        self.assertIsNone(res)
+        self.assertIn("Unexpected execution error", err)
+        self.assertIn("Simulated bad value", err)
 
 
 if __name__ == "__main__":

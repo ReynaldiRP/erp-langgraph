@@ -25,6 +25,7 @@ from app.schemas.tools import (
     ProductInfoFilterSchema,
     VendorInvoiceFilterSchema,
     LocationsFilterSchema,
+    TOOL_DOMAIN_MAP,
 )
 from app.services.llm import get_chat_model
 
@@ -36,15 +37,6 @@ TOOL_SCHEMA_REGISTRY: Dict[str, Type[BaseModel]] = {
     "get_stock_level": StockLevelFilterSchema,
     "get_product_info": ProductInfoFilterSchema,
     "get_locations": LocationsFilterSchema,
-}
-
-TOOL_DOMAIN_MAP: Dict[str, str] = {
-    "fetch_vendor_invoices": "accounting",
-    "get_account_balance": "accounting",
-    "get_journal_entries": "accounting",
-    "get_stock_level": "inventory",
-    "get_product_info": "inventory",
-    "get_locations": "inventory",
 }
 
 # Whitelist of valid accounting/journal/vendor bill statuses
@@ -123,7 +115,6 @@ def has_temporal_expression(text: Optional[str]) -> bool:
     if re.search(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", cleaned):
         return True
     return False
-
 
 def resolve_relative_dates(
     text: str,

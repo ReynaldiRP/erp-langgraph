@@ -64,11 +64,18 @@ async def _execute_single_tool(
     if not handler:
         return None, f"Tool '{tool_name}' not registered in dispatch map"
 
-    raw_result = await handler(
-        params=clean_params,
-        user_token=user_token,
-        company_id=target_company_id,
-    )
+    try:
+        raw_result = await handler(
+            params=clean_params,
+            user_token=user_token,
+            company_id=target_company_id,
+        )
+    except DjangoCoreClientError as err:
+        logger.warning(f"DjangoCoreClientError in _execute_single_tool for tool '{tool_name}': {err}")
+        return None, str(err)
+    except Exception as exc:
+        logger.error(f"Unexpected error in _execute_single_tool for tool '{tool_name}': {exc}", exc_info=True)
+        return None, f"Unexpected execution error: {str(exc)}"
 
     if isinstance(raw_result, dict):
         loc_label = clean_params.get("matched_location_name") or clean_params.get("location_name")
@@ -261,7 +268,21 @@ def tool_node_sync(
 
     if loop and loop.is_running():
         # Running inside an active event loop (e.g. async runner or Jupyter)
+        async def _exec() -> Dict[str, Any]:
+            if isinstance(client, DjangoCoreClient) and not hasattr(client, "_mock_return_value"):
+                async with DjangoCoreClient(
+                    base_url=client.base_url,
+                    token=client.token,
+                    username=client.username,
+                    password=client.password,
+                    default_company_id=client.default_company_id,
+                    timeout=client.timeout,
+                    service_key=client.service_key,
+                ) as c:
+                    return await tool_node(state, client=c)
+            return await tool_node(state, client=client)
+
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            return executor.submit(asyncio.run, tool_node(state, client=client)).result()
+            return executor.submit(asyncio.run, _exec()).result()
     else:
         return asyncio.run(tool_node(state, client=client))

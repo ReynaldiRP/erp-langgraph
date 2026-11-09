@@ -262,5 +262,23 @@ class TestStaticToolsIntegration(unittest.TestCase):
         self.assertEqual(tool_map["inventory_get_product_info"].args_schema, ProductInfoFilterSchema)
 
 
+class TestToolDomainMapRegistry(unittest.TestCase):
+    """Test suite ensuring TOOL_DOMAIN_MAP is centralized and consistent across modules."""
+
+    def test_tool_domain_map_centralized_definition(self):
+        from app.schemas.tools import TOOL_DOMAIN_MAP
+        from app.graph.nodes.router import TOOL_DOMAIN_MAP as ROUTER_DOMAIN_MAP
+        from app.graph.nodes.extractor import TOOL_DOMAIN_MAP as EXTRACTOR_DOMAIN_MAP
+
+        self.assertIs(ROUTER_DOMAIN_MAP, TOOL_DOMAIN_MAP)
+        self.assertIs(EXTRACTOR_DOMAIN_MAP, TOOL_DOMAIN_MAP)
+        self.assertEqual(TOOL_DOMAIN_MAP["fetch_vendor_invoices"], "accounting")
+        self.assertEqual(TOOL_DOMAIN_MAP["get_account_balance"], "accounting")
+        self.assertEqual(TOOL_DOMAIN_MAP["get_journal_entries"], "accounting")
+        self.assertEqual(TOOL_DOMAIN_MAP["get_stock_level"], "inventory")
+        self.assertEqual(TOOL_DOMAIN_MAP["get_product_info"], "inventory")
+        self.assertEqual(TOOL_DOMAIN_MAP["get_locations"], "inventory")
+
+
 if __name__ == "__main__":
     unittest.main()
