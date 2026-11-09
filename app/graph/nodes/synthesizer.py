@@ -74,6 +74,8 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
                 debit = _format_rupiah(item.get("total_debit", 0.0))
                 st = item.get("status") or item.get("state") or "posted"
                 lines.append(f"| {idx} | `{num}` | {tgl} | {vendor} | {debit} | {st.upper()} |")
+        else:
+            lines.append("Tidak ada transaksi tercatat pada periode ini.")
 
         # Summary calculations block (DoD TASK-4.3 preservation)
         if calculations:
