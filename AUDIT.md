@@ -49,32 +49,26 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 - **Location**: `app/graph/nodes/tool_node.py`, `app/graph/nodes/synthesizer.py`
 - **Resolution**: When identical tools are planned within `active_tools`, `tool_node` partitions outputs using composite keys (`f"{tool_name}_{idx}"`) and attaches results to plan dictionaries. `synthesizer_node` reads each plan's distinct result, guaranteeing all products or queries render without collisions.
 
+#### [RESOLVED] Empty invoices in multi-tool output render an empty heading
+- **Location**: `app/graph/nodes/synthesizer.py:L74-78`
+- **Resolution**: Added explicit fallback message `lines.append("Tidak ada transaksi tercatat pada periode ini.")` when `len(entries) == 0`. Prevents printing bare section headers without body text in multi-tool outputs. Verified with unit and multi-tool tests (`test_format_vendor_invoices_empty_entries` and `test_unified_synthesizer_multi_tool_with_empty_invoice`).
+
+#### [RESOLVED] `tool_node_sync` crashes if passed an active async client
+- **Location**: `app/graph/nodes/tool_node.py:L252-270`
+- **Resolution**: Wrapped the worker thread coroutine to inspect `client`. If `client` is an active `DjangoCoreClient` (not a mock) with an `httpx.AsyncClient` bound to the outer loop, a fresh `DjangoCoreClient` is initialized inside the worker thread's event loop with identical credentials and configuration, and safely closed with `async with`. Mocks and None clients pass through intact. Verified in `test_tool_node_sync_with_active_client_in_running_loop` and `test_tool_node_sync_with_mock_client_in_running_loop`.
+
 ---
 
 ### Group 1: Should Fix
 
-#### 1. Empty invoices in multi-tool output render an empty heading
-- **Location**: `app/graph/nodes/synthesizer.py:L60-78`
-- **What this is**: Synthesizer formatter for vendor invoices and journal entries.
-- **Problem**: When an invoice query returns 0 entries, `entries` is empty, so table creation is skipped, printing only `### Laporan Transaksi Tagihan / Jurnal (0 Catatan Ditemukan)` with no explanatory body text.
-- **Fix**: Add an explicit fallback message: `lines.append("Tidak ada transaksi tercatat pada periode ini.")` when `len(entries) == 0`.
-- **If we skip it**: Users see an empty section header without explanation.
-
-#### 2. `tool_node_sync` crashes if passed an active async client
-- **Location**: `app/graph/nodes/tool_node.py:L240-252`
-- **What this is**: Synchronous wrapper for executing `tool_node`.
-- **Problem**: `ThreadPoolExecutor` runs `asyncio.run()` in a new thread. If the caller passed an existing `DjangoCoreClient`, its internal `httpx.AsyncClient` is bound to the outer loop and throws a cross-loop `RuntimeError`.
-- **Fix**: When running inside an active loop, pass `client=None` to ensure the worker thread initializes its own client, or run `loop.run_until_complete`.
-- **If we skip it**: Running synchronous tests or CLI helpers with an injected client crashes with event loop conflicts.
-
-#### 3. `_execute_single_tool` mixes exceptions and error tuples
+#### 1. `_execute_single_tool` mixes exceptions and error tuples
 - **Location**: `app/graph/nodes/tool_node.py:L22-68`
 - **What this is**: Helper function executing individual tools.
 - **Problem**: Returns `(None, "Tool not registered")` for unregistered tools, but allows `DjangoCoreClientError` to raise directly. Path A and Path B must each handle both exception types and error tuple returns.
 - **Fix**: Catch exceptions inside `_execute_single_tool` and consistently return `(result, error_str)`.
 - **If we skip it**: Tool error handling remains fragmented between `gather` return types and outer `try/except` blocks.
 
-#### 4. `TOOL_DOMAIN_MAP` duplicated across modules
+#### 2. `TOOL_DOMAIN_MAP` duplicated across modules
 - **Location**: `app/graph/nodes/router.py:L23`, `app/graph/nodes/extractor.py:L41`
 - **What this is**: Mapping from tool names to ERP domain names (`accounting` / `inventory`).
 - **Problem**: Identical dictionary defined in two separate node files. Adding a new tool requires updating both files.
@@ -85,8 +79,8 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 
 ### Group 2: Nice to Have
 
-#### 5. Empty state hints only display the first tool's filters
-- **Location**: `app/graph/nodes/synthesizer.py:L271-285`
+#### 3. Empty state hints only display the first tool's filters
+- **Location**: `app/graph/nodes/synthesizer.py:L273-287`
 - **What this is**: Helper showing which filters were used when 0 records are found after retries.
 - **Problem**: Reads only `state.get("extracted_params")`, ignoring parameters from subsequent tools in `active_tools`.
 - **Fix**: Iterate through all `active_tools` params to build the filter hints list.
@@ -95,6 +89,6 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 ---
 
 ## Summary
-- **Verdict**: Healthy. All critical (Must Fix) bugs resolved, and all known fallback extractor defects resolved (382 tests passing with zero failures, zero expected failures).
-- **Lean**: -12 lines, -0 dependencies possible.
+- **Verdict**: Healthy. All critical (Must Fix) bugs and high-priority cross-thread/rendering defects resolved (386 tests passing with zero failures).
+- **Lean**: -8 lines, -0 dependencies possible.
 - **Not checked**: Direct live network calls to external Django ERP instances (mocked client used during test execution).

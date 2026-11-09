@@ -180,6 +180,33 @@ class TestMultiToolExecution(unittest.TestCase):
         self.assertIn("Rp 25.000.000,00", output)
         self.assertIn("---", output)
 
+    def test_unified_synthesizer_multi_tool_with_empty_invoice(self):
+        """Synthesizer formats empty invoice section with explicit message when entries are empty."""
+        state: AgentState = {
+            "user_query": "Berapa stok Kertas Art Paper dan tagihan vendor PT ABC?",
+            "is_multi_tool": True,
+            "verification_status": "VALID",
+            "active_tools": [
+                {"tool": "get_stock_level", "domain": "inventory"},
+                {"tool": "fetch_vendor_invoices", "domain": "accounting"},
+            ],
+            "multi_tool_results": {
+                "get_stock_level": [
+                    {"code": "AP-210", "name": "Kertas Art Paper 210", "qty_on_hand": 150.0, "company_id": 1}
+                ],
+                "fetch_vendor_invoices": {
+                    "total_count": 0,
+                    "entries": [],
+                    "calculations": {},
+                },
+            },
+        }
+        output = format_deterministic_answer(state)
+        self.assertIn("Informasi Ketersediaan Stok Barang (Inventory)", output)
+        self.assertIn("Kertas Art Paper 210", output)
+        self.assertIn("### Laporan Transaksi Tagihan / Jurnal (0 Catatan Ditemukan)", output)
+        self.assertIn("Tidak ada transaksi tercatat pada periode ini.", output)
+
     def test_full_pipeline_multi_tool_end_to_end(self):
         """End-to-end multi-tool pipeline executes through StateGraph and produces a unified report."""
         mock_client = AsyncMock(spec=DjangoCoreClient)
