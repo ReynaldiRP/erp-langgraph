@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, START, END
 from app.graph.state import create_initial_state, AgentState
 from app.graph.nodes.router import router_node
 from app.graph.nodes.extractor import extractor_node
-from app.graph.nodes.tool_node import tool_node, tool_node_sync
+from app.graph.nodes.tool_node import tool_node, tool_node_sync, _execute_single_tool
 from app.services.django_client import (
     DjangoCoreClient,
     DjangoAuthError,
@@ -433,6 +433,59 @@ class TestSynchronousWrapperAndPipelineChain(unittest.TestCase):
         self.assertIsNotNone(final_state["tool_result"])
         self.assertIn("calculations", final_state["tool_result"])
         self.assertEqual(final_state["tool_result"]["calculations"]["grand_total"], 12000000.0)
+
+
+class TestExecuteSingleToolDirect(unittest.IsolatedAsyncioTestCase):
+    """Test suite validating _execute_single_tool uniform error tuple handling."""
+
+    async def test_execute_single_tool_unregistered_tool(self):
+        """Unregistered tool returns (None, error_str)."""
+        mock_client = MagicMock(spec=DjangoCoreClient)
+        res, err = await _execute_single_tool(
+            tool_name="unregistered_tool",
+            params={},
+            erp_client=mock_client,
+            user_token=None,
+            default_company_id=1,
+            dispatch_map={},
+        )
+        self.assertIsNone(res)
+        self.assertIn("not registered in dispatch map", err)
+
+    async def test_execute_single_tool_catches_django_client_error(self):
+        """DjangoCoreClientError is caught and returned as (None, error_str)."""
+        mock_handler = AsyncMock(side_effect=DjangoCoreClientError("Custom ERP 500 error", status_code=500))
+        dispatch_map = {"my_tool": mock_handler}
+        mock_client = MagicMock(spec=DjangoCoreClient)
+
+        res, err = await _execute_single_tool(
+            tool_name="my_tool",
+            params={"search": "abc"},
+            erp_client=mock_client,
+            user_token=None,
+            default_company_id=1,
+            dispatch_map=dispatch_map,
+        )
+        self.assertIsNone(res)
+        self.assertEqual(err, "Custom ERP 500 error")
+
+    async def test_execute_single_tool_catches_unexpected_exception(self):
+        """Unexpected exception is caught and returned as (None, error_str)."""
+        mock_handler = AsyncMock(side_effect=ValueError("Simulated bad value"))
+        dispatch_map = {"my_tool": mock_handler}
+        mock_client = MagicMock(spec=DjangoCoreClient)
+
+        res, err = await _execute_single_tool(
+            tool_name="my_tool",
+            params={},
+            erp_client=mock_client,
+            user_token=None,
+            default_company_id=1,
+            dispatch_map=dispatch_map,
+        )
+        self.assertIsNone(res)
+        self.assertIn("Unexpected execution error", err)
+        self.assertIn("Simulated bad value", err)
 
 
 if __name__ == "__main__":
