@@ -63,6 +63,53 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
         total_count = tool_result.get("total_count", len(entries))
         calculations = tool_result.get("calculations") or {}
 
+        # Single document detail presentation with line items
+        if len(entries) == 1 and entries[0].get("lines"):
+            single_entry = entries[0]
+            doc_lines = single_entry.get("lines") or []
+            num = single_entry.get("number") or single_entry.get("entry_number") or "-"
+            tgl = single_entry.get("date") or "-"
+            vendor = single_entry.get("vendor_name") or single_entry.get("journal_name") or "-"
+            st = single_entry.get("status") or single_entry.get("state") or "posted"
+            desc = single_entry.get("description") or single_entry.get("reference") or "-"
+
+            lines.append(f"### Rincian Dokumen Transaksi: `{num}`\n")
+            lines.append(f"- **Nomor Dokumen**: `{num}`")
+            lines.append(f"- **Tanggal**: {tgl}")
+            lines.append(f"- **Rekanan / Vendor**: {vendor}")
+            lines.append(f"- **Status**: **{st.upper()}**")
+            if desc and desc != "-":
+                lines.append(f"- **Keterangan**: {desc}")
+            lines.append("")
+
+            is_bill = any(l.get("type") == "bill_line" or "product_name" in l for l in doc_lines)
+            if is_bill:
+                lines.append("#### Rincian Item Tagihan:")
+                lines.append("| No | Nama Produk / Item | Kuantitas | Harga Satuan | Subtotal |")
+                lines.append("|:---|:---|:---|:---|:---|")
+                for l_idx, l_item in enumerate(doc_lines, start=1):
+                    p_name = l_item.get("product_name") or l_item.get("label") or "-"
+                    qty = l_item.get("quantity", 1.0)
+                    price = _format_rupiah(l_item.get("price", 0.0))
+                    subtot = _format_rupiah(l_item.get("subtotal", 0.0))
+                    lines.append(f"| {l_idx} | {p_name} | {qty:g} | {price} | {subtot} |")
+            else:
+                lines.append("#### Rincian Baris Jurnal:")
+                lines.append("| No | Kode Akun | Nama Akun | Keterangan | Debit | Kredit |")
+                lines.append("|:---|:---|:---|:---|:---|:---|")
+                for l_idx, l_item in enumerate(doc_lines, start=1):
+                    acc_code = l_item.get("account_code") or "-"
+                    acc_name = l_item.get("account_name") or "-"
+                    l_desc = l_item.get("description") or "-"
+                    deb = _format_rupiah(l_item.get("debit", 0.0))
+                    kred = _format_rupiah(l_item.get("credit", 0.0))
+                    lines.append(f"| {l_idx} | `{acc_code}` | {acc_name} | {l_desc} | {deb} | {kred} |")
+
+            total_val = single_entry.get("total_amount") or single_entry.get("total_debit", 0.0)
+            lines.append("\n#### Ringkasan Kalkulasi:")
+            lines.append(f"- **Total Nilai Transaksi**: **{_format_rupiah(total_val)}**")
+            return "\n".join(lines)
+
         lines.append(f"### Laporan Transaksi Tagihan / Jurnal ({total_count} Catatan Ditemukan)\n")
         if entries:
             lines.append("| No | Nomor Dokumen | Tanggal | Rekanan / Vendor | Total Debit | Status |")
@@ -80,6 +127,8 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
         # Summary calculations block (DoD TASK-4.3 preservation)
         if calculations:
             lines.append("\n#### Ringkasan Kalkulasi Total:")
+            if "total_amount" in calculations:
+                lines.append(f"- **Total Nilai Transaksi**: {_format_rupiah(calculations['total_amount'])}")
             if "total_unpaid" in calculations:
                 lines.append(f"- **Total Belum Dibayar**: {_format_rupiah(calculations['total_unpaid'])}")
             if "total_paid" in calculations:

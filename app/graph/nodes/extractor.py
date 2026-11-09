@@ -39,6 +39,82 @@ TOOL_SCHEMA_REGISTRY: Dict[str, Type[BaseModel]] = {
     "get_locations": LocationsFilterSchema,
 }
 
+# Whitelist of valid accounting/journal/vendor bill statuses
+ALLOWED_JOURNAL_STATUSES = {"draft", "posted", "post", "cancel", "unpaid", "paid"}
+
+# Canonical mapping from Indonesian branch/city names to FastPrint ERP company_id
+BRANCH_COMPANY_MAP: Dict[str, int] = {
+    "kantor pusat": 1,
+    "toko pusat": 2,
+    "head office": 3,
+    "head-office": 3,
+    "ho": 3,
+    "main store": 4,
+    "mainstore": 4,
+    "makasar": 5,
+    "makassar": 5,
+    "fp makasar": 5,
+    "fp makassar": 5,
+    "bandung": 6,
+    "fp bandung": 6,
+    "surabaya": 7,
+    "fp surabaya": 7,
+    "surabaya mt": 7,
+    "surabaya mth": 7,
+    "jakarta": 8,
+    "fp jakarta": 8,
+    "toko fast print surabaya": 9,
+    "toko surabaya": 9,
+    "medan": 10,
+    "fp medan": 10,
+    "hr": 11,
+    "sandy": 12,
+    "bekasi": 13,
+    "fp bekasi": 13,
+    "tangerang": 14,
+    "fp tangerang": 14,
+    "malang": 15,
+    "fp malang": 15,
+    "fastmart": 17,
+    "pusat": 1,
+}
+
+TEMPORAL_KEYWORDS = (
+    "bulan", "hari", "minggu", "tahun", "kemarin", "today", "yesterday",
+    "januari", "februari", "maret", "april", "mei", "juni",
+    "juli", "agustus", "september", "oktober", "november", "desember",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "agu", "sep", "okt", "nov", "des",
+    "lalu", "terakhir", "kebelakang", "sejak", "sampai", "hingga",
+)
+
+
+def resolve_branch_company_id(text: Optional[str]) -> Optional[int]:
+    """
+    Resolve Indonesian city or branch mentions into official FastPrint ERP company_id.
+    Matches phrases like 'cabang bandung', 'dicabang bandung', 'di bandung', 'kantor pusat', etc.
+    """
+    if not text:
+        return None
+    cleaned = text.lower().strip()
+    for branch_key in sorted(BRANCH_COMPANY_MAP.keys(), key=lambda k: -len(k)):
+        pattern = rf"(?:\b(?:di\s*cabang|dicabang|cabang|di\s*toko|di\s*kantor|kantor|di)\s+)?\b{re.escape(branch_key)}\b"
+        if re.search(pattern, cleaned):
+            return BRANCH_COMPANY_MAP[branch_key]
+    return None
+
+
+def has_temporal_expression(text: Optional[str]) -> bool:
+    """Check if query text contains explicit dates, date ranges, or relative temporal keywords."""
+    if not text:
+        return False
+    cleaned = text.lower()
+    if any(k in cleaned for k in TEMPORAL_KEYWORDS):
+        return True
+    if re.search(r"\b\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?\b", cleaned):
+        return True
+    if re.search(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", cleaned):
+        return True
+    return False
 
 def resolve_relative_dates(
     text: str,
@@ -190,6 +266,12 @@ def _fallback_extract_vendor_invoice(
             v_name = prefix_pattern.group(1).strip().rstrip("?!.,; ")
             if v_name.lower() not in VENDOR_NAME_STOPWORDS:
                 params["vendor_name"] = v_name
+
+    # Document number detection (e.g. PC/2026/00002, BDG/JE/2026/00009, INV/2026/001)
+    doc_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", cleaned)
+    if doc_match:
+        params["search"] = doc_match.group(1).upper()
+        params["include_lines"] = True
 
     query_lower = (query or "").lower()
     if "belum lunas" in query_lower or "unpaid" in query_lower or "belum dibayar" in query_lower:
@@ -395,9 +477,10 @@ def _fallback_extract_journal_entries(
     params: Dict[str, Any] = {}
     cleaned = query.strip()
 
-    entry_match = re.search(r"\b(JE/\d{4}/\d+)\b", cleaned, re.IGNORECASE)
+    entry_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", cleaned, re.IGNORECASE)
     if entry_match:
         params["entry_number"] = entry_match.group(1).upper()
+        params["include_lines"] = True
 
     query_lower = cleaned.lower()
     if "draft" in query_lower:
@@ -483,7 +566,10 @@ def _extract_single_tool_params(
                 f"Extract filter entities strictly adhering to the schema.\n"
                 f"Guidelines for extracted fields:\n"
                 f"- For 'search': Extract ONLY key entity names or document numbers (e.g. 'TikTok', 'PT Sumber Makmur', 'BCA'). Do NOT include full conversational phrases like 'aku mau tanya', 'saldo di jurnal', or relative dates.\n"
+                f"- For 'vendor_name': Extract only clean vendor / supplier company names (e.g. 'MEGACOM BEC', 'PT Sumber Makmur'). Do NOT append branch or city names into vendor_name.\n"
                 f"- For 'account_code' (in get_account_balance): Only set if user provided an actual account code (e.g. '11285', '111100'). If the user provided a name like 'bank tiktok' or 'marketplace tiktok', do NOT set 'account_code' to the name.\n"
+                f"- STRICT DATE RULE: Do NOT populate 'date_from' or 'date_to' unless the user explicitly specifies a date, relative date (e.g. 'bulan ini', 'bulan lalu', 'kemarin'), or time window. If no time expression is mentioned, leave both None.\n"
+                f"- STRICT STATUS RULE: Valid status values are only 'draft', 'posted', 'paid', 'unpaid', or 'cancel'. Never extract 'not_found' or conversational terms as status.\n"
                 f"- If the user specifies relative dates like 'bulan ini' or '3 hari terakhir', map them to date_from and date_to.\n"
                 f"- If the user refers to entities from previous turns (e.g. 'produk itu', 'barang tadi', 'vendor tersebut', 'itu'), "
                 f"resolve the specific SKU, code, or entity name from the conversation history."
@@ -656,19 +742,67 @@ def _extract_single_tool_params(
         if not extracted_dict.get("date_to") and rel_date_to:
             extracted_dict["date_to"] = rel_date_to
 
-    # 5. Staged Retry Relaxation
+    # Strict date enforcement: if query mentions no explicit dates or temporal keywords, drop hallucinated dates
+    if supports_dates and not has_temporal_expression(sub_query) and not has_temporal_expression(user_query):
+        extracted_dict.pop("date_from", None)
+        extracted_dict.pop("date_to", None)
+
+    # Status sanitization against valid ERP whitelist
+    if "status" in extracted_dict and extracted_dict["status"]:
+        st_val = str(extracted_dict["status"]).lower().strip()
+        if st_val in ALLOWED_JOURNAL_STATUSES:
+            extracted_dict["status"] = st_val
+        else:
+            extracted_dict.pop("status", None)
+
+    # Branch entity resolution into company_id
+    if not extracted_dict.get("company_id"):
+        detected_branch = resolve_branch_company_id(sub_query) or resolve_branch_company_id(user_query)
+        if detected_branch:
+            extracted_dict["company_id"] = detected_branch
+
+    # Clean branch name noise from vendor_name if accidentally included
+    if extracted_dict.get("vendor_name"):
+        v_clean = str(extracted_dict["vendor_name"]).strip()
+        for b_name in sorted(BRANCH_COMPANY_MAP.keys(), key=lambda k: -len(k)):
+            b_pattern = rf"\b(?:di\s*cabang|dicabang|cabang|di)?\s*{re.escape(b_name)}\b"
+            v_clean = re.sub(b_pattern, "", v_clean, flags=re.IGNORECASE).strip().strip("-,:; ")
+        if v_clean:
+            extracted_dict["vendor_name"] = v_clean
+
+    # Document number detection & include_lines
+    doc_m = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", sub_query) or re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", user_query)
+    if doc_m:
+        doc_code = doc_m.group(1).upper()
+        if tool_name in ("fetch_vendor_invoices", "get_journal_entries"):
+            if not extracted_dict.get("search") and not extracted_dict.get("entry_number"):
+                if tool_name == "get_journal_entries":
+                    extracted_dict["entry_number"] = doc_code
+                else:
+                    extracted_dict["search"] = doc_code
+            extracted_dict["include_lines"] = True
+
+    if any(kw in user_query.lower() for kw in ("detail", "rincian", "item", "isi")) and tool_name in ("fetch_vendor_invoices", "get_journal_entries"):
+        extracted_dict["include_lines"] = True
+
+    # 5. Staged Retry Relaxation (Strict Identifier Guard: do not pop document number / code)
+    has_doc_identifier = bool(
+        extracted_dict.get("entry_number")
+        or (extracted_dict.get("search") and re.search(r"\b[A-Za-z0-9_\-]+/\d{4}/\d+\b", str(extracted_dict.get("search"))))
+    )
     if retry_count == 1:
         extracted_dict.pop("date_from", None)
         extracted_dict.pop("date_to", None)
     elif retry_count >= 2:
         extracted_dict.pop("date_from", None)
         extracted_dict.pop("date_to", None)
-        if tool_name == "fetch_vendor_invoices":
-            extracted_dict.pop("vendor_name", None)
-            extracted_dict.pop("search", None)
-        elif tool_name == "get_journal_entries":
-            extracted_dict.pop("status", None)
-            extracted_dict.pop("search", None)
+        if not has_doc_identifier:
+            if tool_name == "fetch_vendor_invoices":
+                extracted_dict.pop("vendor_name", None)
+                extracted_dict.pop("search", None)
+            elif tool_name == "get_journal_entries":
+                extracted_dict.pop("status", None)
+                extracted_dict.pop("search", None)
 
     # 6. Schema Filtering / Validation
     try:
@@ -766,7 +900,21 @@ def extractor_node(
 
     primary_params = working_active_tools[0].get("params", {}) if working_active_tools else {}
 
-    return {
+    result_update: Dict[str, Any] = {
         "active_tools": working_active_tools,
         "extracted_params": primary_params,
     }
+
+    branch_co_id = (
+        primary_params.get("company_id")
+        or resolve_branch_company_id(user_query)
+    )
+    if branch_co_id is not None:
+        result_update["company_id"] = branch_co_id
+        if working_active_tools:
+            working_active_tools[0].setdefault("params", {})["company_id"] = branch_co_id
+            primary_params["company_id"] = branch_co_id
+    elif state.get("company_id") is not None:
+        result_update["company_id"] = state.get("company_id")
+
+    return result_update

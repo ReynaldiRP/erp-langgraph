@@ -6,6 +6,7 @@ graceful error capture, and preserves transaction data and calculations block in
 import asyncio
 import concurrent.futures
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
@@ -33,8 +34,15 @@ async def _execute_single_tool(
 
     # Adapt parameters for vendor invoices/journal entries
     if tool_name in ("fetch_vendor_invoices", "get_journal_entries"):
-        if "vendor_name" in clean_params and "search" not in clean_params:
-            clean_params["search"] = clean_params["vendor_name"]
+        if "vendor_name" in clean_params:
+            current_search = clean_params.get("search")
+            if not current_search or clean_params["vendor_name"].lower() in current_search.lower():
+                clean_params["search"] = clean_params["vendor_name"]
+        elif "search" in clean_params and not clean_params.get("vendor_name"):
+            cand = str(clean_params["search"]).strip()
+            # Do not promote search to vendor_name if it is a document number pattern
+            if not re.search(r"\b[A-Za-z0-9_\-]+/\d{4}/\d+\b", cand) and not any(cand.upper().startswith(p) for p in ("JE/", "PC/", "INV/", "BILL/")):
+                clean_params["vendor_name"] = clean_params["search"]
 
     # Pre-lookup for stock location_name -> location_id
     if tool_name == "get_stock_level" and clean_params.get("location_name") and not clean_params.get("location_id"):
@@ -214,6 +222,7 @@ async def tool_node(
             }
 
         return {
+            "company_id": target_company_id,
             "tool_result": final_tool_result,
             "multi_tool_results": {detected_tool: final_tool_result},
             "multi_verification_status": {detected_tool: "VALID"},

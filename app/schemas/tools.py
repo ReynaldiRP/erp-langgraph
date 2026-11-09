@@ -48,11 +48,14 @@ class JournalEntriesFilterSchema(BaseModel):
     company_id: Optional[int] = Field(None, description="Company ID (defaults to default company)")
     journal_id: Optional[int] = Field(None, description="Filter by specific journal book ID")
     entry_number: Optional[str] = Field(None, description="Exact or partial journal entry number (e.g. 'JE/2026/001')")
+    vendor_id: Optional[int] = Field(None, description="Filter by specific vendor ID")
+    vendor_name: Optional[str] = Field(None, description="Filter by vendor or supplier name")
     status: Optional[str] = Field(None, description="Status filter: 'draft', 'posted', 'cancel', etc.")
     date_from: Optional[str] = Field(None, description="Filter entries on or after YYYY-MM-DD")
     date_to: Optional[str] = Field(None, description="Filter entries on or before YYYY-MM-DD")
     account_id: Optional[int] = Field(None, description="Filter entries containing items for this account ID")
     search: Optional[str] = Field(None, description="Keyword search matching document number or description")
+    include_lines: Optional[bool] = Field(None, description="Include line items detail for each journal entry")
     limit: int = Field(50, ge=1, le=200, description="Page limit (1-200)")
     offset: int = Field(0, ge=0, description="Pagination offset")
 
@@ -110,6 +113,7 @@ class VendorInvoiceFilterSchema(BaseModel):
     date_to: Optional[str] = Field(None, description="Tanggal akhir transaksi (YYYY-MM-DD)")
     status: Optional[str] = Field(None, description="Status tagihan: 'draft', 'posted', 'paid', 'unpaid', dll.")
     search: Optional[str] = Field(None, description="Pencarian bebas nomor invoice / referensi / catatan")
+    include_lines: Optional[bool] = Field(None, description="Include line items detail for each invoice")
     company_id: Optional[int] = Field(None, description="Company ID (scoping multi-company)")
     limit: int = Field(50, ge=1, le=200, description="Batas jumlah record (1-200)")
     offset: int = Field(0, ge=0, description="Pagination offset")
@@ -126,13 +130,16 @@ class VendorInvoiceFilterSchema(BaseModel):
 
     def to_journal_filter(self) -> "JournalEntriesFilterSchema":
         """Convert to standard JournalEntriesFilterSchema payload for ERP Django Core."""
-        search_term = self.vendor_name or self.search
+        search_term = self.search or self.vendor_name
         return JournalEntriesFilterSchema(
             company_id=self.company_id,
+            vendor_name=self.vendor_name,
+            vendor_id=self.vendor_id,
             status=self.status,
             date_from=self.date_from,
             date_to=self.date_to,
             search=search_term,
+            include_lines=self.include_lines,
             limit=self.limit,
             offset=self.offset,
         )
@@ -190,6 +197,8 @@ class JournalEntryItem(BaseModel):
     vendor_name: Optional[str] = None
     total_debit: float = 0.0
     total_credit: float = 0.0
+    total_amount: Optional[float] = 0.0
+    lines: Optional[List[Dict[str, Any]]] = None
 
 
 class JournalEntriesDataSchema(BaseModel):
@@ -197,6 +206,7 @@ class JournalEntriesDataSchema(BaseModel):
     limit: int
     offset: int
     entries: List[JournalEntryItem] = Field(default_factory=list)
+    calculations: Optional[Dict[str, Any]] = None
 
 
 # ------------------------------------------------------------------------------
