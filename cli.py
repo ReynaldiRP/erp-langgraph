@@ -1,14 +1,135 @@
 """
 Interactive CLI Runner for FastPrint ERP LangGraph Agent.
 Uses the 5-node StateGraph pipeline (router -> extractor -> tool_node -> verifier -> synthesizer).
+Provides real-time interactive animated spinner and node execution status feedback.
 Run with: python cli.py
 """
 import sys
+import threading
+import time
 import uuid
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from app.core.config import settings
 from app.graph.workflow import run_workflow_sync
+
+
+class LiveStepSpinner:
+    """
+    Terminal spinner providing live animated progress and step-by-step node execution feedback.
+    Uses ANSI colors and symbols. Gracefully degrades on non-interactive environments (pipes/mocks).
+    """
+    FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    NODE_METADATA = {
+        "summarizer": ("Summarizer", "Meringkas konteks percakapan"),
+        "router": ("Router", "Mengidentifikasi domain & modul target"),
+        "extractor": ("Extractor", "Mengekstrak parameter filter & entitas"),
+        "tool_node": ("Tool", "Menghubungi backend ERP Django"),
+        "rag_node": ("Knowledge", "Pencarian dokumen SOP & spesifikasi"),
+        "verifier": ("Verifier", "Memvalidasi kelayakan data & kuantitas"),
+        "synthesizer": ("Synthesizer", "Menyusun jawaban terstruktur"),
+    }
+
+    def __init__(self, initial_msg: str = "Memulai pipeline StateGraph..."):
+        self.msg = initial_msg
+        self.running = False
+        self.is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+        self.start_time = time.time()
+        self.node_start_time = time.time()
+        self.lock = threading.Lock()
+        self.thread: Optional[threading.Thread] = None
+
+    def start(self) -> "LiveStepSpinner":
+        self.start_time = time.time()
+        self.node_start_time = time.time()
+        if not self.is_tty:
+            return self
+        self.running = True
+        self.thread = threading.Thread(target=self._spin_loop, daemon=True)
+        self.thread.start()
+        return self
+
+    def _spin_loop(self):
+        idx = 0
+        while self.running:
+            with self.lock:
+                elapsed = time.time() - self.node_start_time
+                frame = self.FRAMES[idx % len(self.FRAMES)]
+                text = f"\r\033[K\033[36m{frame}\033[0m {self.msg} \033[90m({elapsed:.1f}s)\033[0m"
+                sys.stdout.write(text)
+                sys.stdout.flush()
+            time.sleep(0.08)
+            idx += 1
+
+    def step_completed(self, node_name: str, update: Dict[str, Any], acc_state: Dict[str, Any]):
+        elapsed = time.time() - self.node_start_time
+        meta = self.NODE_METADATA.get(node_name, (node_name.capitalize(), node_name))
+        node_title = meta[0]
+
+        detail = ""
+        icon = "\033[32m✔\033[0m"
+
+        if node_name == "router":
+            d = acc_state.get("detected_domain") or update.get("detected_domain")
+            t = acc_state.get("detected_tool") or update.get("detected_tool")
+            detail = f": {d} -> {t or 'guardrail'}"
+        elif node_name == "extractor":
+            p = acc_state.get("extracted_params") or update.get("extracted_params") or {}
+            clean_p = {k: v for k, v in p.items() if v is not None and k != "company_id"}
+            if clean_p:
+                items_str = ", ".join(f"{k}='{v}'" for k, v in clean_p.items())
+                detail = f": {items_str}"
+            else:
+                detail = " (parameter terekstrak)"
+        elif node_name == "tool_node":
+            tr = acc_state.get("tool_result") or update.get("tool_result")
+            err = acc_state.get("error_message") or update.get("error_message")
+            if err:
+                icon = "\033[31m✖\033[0m"
+                detail = f": {str(err)[:40]}..."
+            elif tr:
+                count = (
+                    tr.get("total_count", len(tr.get("entries", [])))
+                    if isinstance(tr, dict)
+                    else (len(tr) if isinstance(tr, list) else 1)
+                )
+                detail = f": {count} data ditemukan"
+            else:
+                detail = " (eksekusi selesai)"
+        elif node_name == "verifier":
+            status = acc_state.get("verification_status") or update.get("verification_status")
+            retries = acc_state.get("retry_count", 0)
+            if status == "RETRY":
+                icon = "\033[33m↻\033[0m"
+                detail = f": Data kosong, mengulang retry {retries}/2..."
+            elif status == "EMPTY":
+                icon = "\033[33m!\033[0m"
+                detail = ": Data kosong (batas retry tercapai)"
+            elif status == "ERROR":
+                icon = "\033[31m✖\033[0m"
+                detail = ": Error verifikasi"
+            else:
+                detail = f": Status {status or 'VALID'}"
+        elif node_name == "synthesizer":
+            detail = " (selesai)"
+
+        with self.lock:
+            if self.is_tty:
+                sys.stdout.write(f"\r\033[K{icon} \033[1m[{node_title}]\033[0m Selesai{detail} \033[90m({elapsed:.1f}s)\033[0m\n")
+                sys.stdout.flush()
+            self.node_start_time = time.time()
+            self.msg = "Melanjutkan langkah berikutnya..."
+
+    def stop(self) -> float:
+        self.running = False
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        total_time = time.time() - self.start_time
+        if self.is_tty:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+        return total_time
 
 
 def main():
@@ -77,12 +198,22 @@ def main():
 
             print("\nMemproses alur StateGraph...", flush=True)
 
+            spinner = LiveStepSpinner("Menginisialisasi pipeline StateGraph...").start()
+
+            def on_finish(node_name: str, update: Dict[str, Any], acc_state: Dict[str, Any]):
+                spinner.step_completed(node_name, update, acc_state)
+
             final_state = run_workflow_sync(
                 user_query=user_input,
                 user_token=current_token,
                 company_id=current_company_id,
                 thread_id=session_id,
+                on_node_finish=on_finish,
             )
+
+            total_elapsed = spinner.stop()
+            if spinner.is_tty:
+                print(f"⏱️  Total waktu eksekusi: {total_elapsed:.2f}s\n")
 
             domain = final_state.get("detected_domain")
             tool = final_state.get("detected_tool")
