@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "erp-ai-orchestrator"
     APP_ENV: str = "development"
     APP_HOST: str = "0.0.0.0"
-    APP_PORT: int = 8001
+    APP_PORT: int = 8002
     LOG_LEVEL: str = "info"
 
     # 1. ERP Backend Connection

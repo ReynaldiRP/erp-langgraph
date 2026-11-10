@@ -10,7 +10,7 @@ This document serves as the canonical operational specification and codebase gui
 
 ### Core Architecture & Components
 - **Runtime & Language**: Python 3.11+
-- **API Service**: FastAPI (served via `uvicorn` on port `8001`)
+- **API Service**: FastAPI (served via `uvicorn` on port `8002`)
 - **Agent Framework**: LangGraph (`langgraph.graph.StateGraph`), LangChain Core (`langchain_core`)
 - **Settings & Validation**: Pydantic v2 (`pydantic-settings`, `BaseModel`)
 - **HTTP Clients**:
@@ -50,8 +50,8 @@ The test suite utilizes the standard Python `unittest` framework. **Do not execu
 # Interactive Terminal CLI Runner
 python cli.py
 
-# FastAPI Orchestrator Service (Port 8001)
-uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+# FastAPI Orchestrator Service (Port 8002)
+uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
 ```
 
 ---
