@@ -135,6 +135,34 @@ class TestAutoFallbackModelFactory(unittest.TestCase):
             )
             self.assertIsNone(model.extra_body)
 
+    def test_openai_model_has_openrouter_fallback(self):
+        """When provider='openai' and enable_fallback=True, model should have openrouter fallback configured."""
+        with patch.object(settings, "OPENAI_API_KEY", "mock-openai-key"), \
+             patch.object(settings, "OPENROUTER_API_KEY", "mock-openrouter-key"):
+            model = get_chat_model(
+                provider="openai",
+                model_name="gpt-4o-mini",
+                enable_fallback=True,
+            )
+            self.assertEqual(model.model_name, "gpt-4o-mini")
+            self.assertTrue(hasattr(model, "fallbacks"))
+            self.assertGreaterEqual(len(model.fallbacks), 1)
+            # Verify the fallback model has OpenRouter configuration
+            fb_model = model.fallbacks[0]
+            self.assertIn("openrouter.ai", str(fb_model.openai_api_base))
+
+    def test_openai_model_disable_fallback(self):
+        """When provider='openai' and enable_fallback=False, model should not have fallbacks."""
+        with patch.object(settings, "OPENAI_API_KEY", "mock-openai-key"), \
+             patch.object(settings, "OPENROUTER_API_KEY", "mock-openrouter-key"):
+            model = get_chat_model(
+                provider="openai",
+                model_name="gpt-4o-mini",
+                enable_fallback=False,
+            )
+            self.assertEqual(model.model_name, "gpt-4o-mini")
+            self.assertFalse(hasattr(model, "fallbacks"))
+
 
 if __name__ == "__main__":
     unittest.main()
