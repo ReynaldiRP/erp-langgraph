@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "erp-ai-orchestrator"
     APP_ENV: str = "development"
     APP_HOST: str = "0.0.0.0"
-    APP_PORT: int = 8001
+    APP_PORT: int = 8002
     LOG_LEVEL: str = "info"
 
     # 1. ERP Backend Connection
@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     # OpenRouter Configuration
     OPENROUTER_API_KEY: Optional[str] = None
-    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
+    OPENROUTER_MODEL: str = "nvidia/nemotron-3.5-super-vl:free"
 
     # OpenAI Configuration
     OPENAI_API_KEY: Optional[str] = None

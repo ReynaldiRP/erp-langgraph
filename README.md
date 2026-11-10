@@ -8,7 +8,7 @@ Service orchestrator berbasis FastAPI dan LangGraph untuk integrasi agen dengan 
 
 ```mermaid
 graph TD
-    Client[Client / Frontend / External Service] -->|HTTP REST| API[FastAPI Orchestrator Service<br/>Port 8001]
+    Client[Client / Frontend / External Service] -->|HTTP REST| API[FastAPI Orchestrator Service<br/>Port 8002]
     Terminal[Developer / Admin] -->|Terminal CLI| CLI[cli.py Runner]
     
     subgraph "erp-ai-orchestrator (app/)"
@@ -136,7 +136,7 @@ Konfigurasi dibaca dari variabel environment atau file `.env`:
 | `APP_NAME` | string | `"erp-ai-orchestrator"` | Nama aplikasi service |
 | `APP_ENV` | string | `"development"` | Mode environment (`development`/`production`) |
 | `APP_HOST` | string | `"0.0.0.0"` | Host binding FastAPI |
-| `APP_PORT` | integer | `8001` | Port service FastAPI |
+| `APP_PORT` | integer | `8002` | Port service FastAPI |
 | `LOG_LEVEL` | string | `"info"` | Log level |
 | `ERP_BASE_URL` | string | `"http://127.0.0.1:8000"` | URL ERP Django (alias: `DJANGO_INTERNAL_API_URL`) |
 | `DEFAULT_COMPANY_ID` | integer | `1` | ID company default |
@@ -199,17 +199,17 @@ Isi kredensial ERP dan API key LLM yang digunakan.
 ### 3. Jalankan Service FastAPI
 
 ```powershell
-uvicorn app.main:app --port 8001 --reload
+uvicorn app.main:app --port 8002 --reload
 ```
 
 Cek endpoint health:
 ```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:8001/health" -Method Get
+Invoke-RestMethod -Uri "http://127.0.0.1:8002/health" -Method Get
 ```
 
 Dokumentasi API:
-- Swagger UI: [http://localhost:8001/docs](http://localhost:8001/docs)
-- ReDoc: [http://localhost:8001/redoc](http://localhost:8001/redoc)
+- Swagger UI: [http://localhost:8002/docs](http://localhost:8002/docs)
+- ReDoc: [http://localhost:8002/redoc](http://localhost:8002/redoc)
 
 ### 4. Jalankan Terminal CLI
 

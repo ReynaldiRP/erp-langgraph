@@ -1,51 +1,15 @@
-# Architecture & Quality Audit Report: Multi-Tool & Cross-Module Execution
+# Architecture & Code Quality Audit: FastPrint ERP AI Orchestrator
 
-**Target Repository**: `erp-langgraph`  
-**Scope**: Multi-Tool & Cross-Module Execution implementation (Phase 2 / Milestones 1–5)  
-**Date**: 2026-11-07  
-
----
-
-## What This Repo Does
-This repository provides an autonomous LangGraph orchestrator that answers accounting and inventory queries for FastPrint ERP. It parses user questions, extracts parameters against Pydantic schemas, calls Django ERP endpoints concurrently, verifies the data, and formats Markdown responses with IDR currency tables.
-
-**Load Assumed**: A FastAPI service (`uvicorn` port 8001) and interactive CLI serving 10–50 concurrent company staff querying accounting ledgers and warehouse inventory across multiple company IDs.
+## Overview
+This repository provides an autonomous LangGraph orchestrator that answers accounting and inventory business queries. It interfaces with FastPrint ERP Django's `ai_tools` layer via `DjangoCoreClient` / `ERPClient`.
 
 ---
 
-## Audit Findings
+## Findings & Remediation Progress
 
-### Resolved Issues (2026-11-07)
+### Group 0: Must Fix (Critical)
 
-#### [RESOLVED] Anaphoric clitic `-nya` does not trigger conversational history lookup
-- **Location**: `app/graph/nodes/extractor.py`
-- **Resolution**: Added `has_anaphoric_reference(cleaned)` check in `_fallback_extract_stock_level` and `_fallback_extract_product_info` before history inspection. Filtered `prior_msgs` to exclude the current turn when searching conversation history, correctly extracting codes discussed in prior turns (`test_ellipsis_from_chat_history_with_accounting_tool` passing cleanly).
-
-#### [RESOLVED] Location fallback extractor captures `"gudang"` as location name
-- **Location**: `app/graph/nodes/extractor.py`
-- **Resolution**: Refined `_fallback_extract_locations` pattern to tolerate repeated warehouse prefixes (`(?:(?:gudang|lokasi|warehouse)\s+)+`) and stripped location stopwords (`gudang`, `lokasi`, `warehouse`, `apa`, `daftar`, etc.). Correctly extracts target search tokens like `"utama"` from `"lokasi gudang utama"` (`test_journal_entries_and_locations` passing cleanly).
-
-#### [RESOLVED] Multi-word product names truncated in stock fallback extractor
-- **Location**: `app/graph/nodes/extractor.py`
-- **Resolution**: Updated `_fallback_extract_stock_level` regex to capture multi-word tokens delimited by boundary keywords (`di`, `pada`, `ke`, `gudang`, `lokasi`, `dan`, `serta`, etc.) or sentence end. Added negative lookahead to prevent false-positive captures of locations, financial terms, and customer references. Stripped trailing punctuation/dots. Verified across single- and multi-tool tests.
-
-#### [RESOLVED] Trailing punctuation and emoji break vendor extraction
-- **Location**: `app/graph/nodes/extractor.py`
-- **Resolution**: Stripped trailing punctuation, symbols, and Unicode emojis (`re.sub(r"[^\w\)]+$", "", ...)`). Extended delimiter pattern to handle intervening punctuation (`[,?!;:/\-]+`) before vendor delimiter keywords. Verified with question marks, emojis, and combined edge cases.
-
-#### [RESOLVED] SKU fallback extractor captures trailing dot
-- **Location**: `app/graph/nodes/extractor.py`
-- **Resolution**: Product code tokens are cleaned of sentence-ending periods with `.rstrip(".")` and sentence-end delimiter recognition, passing adversarial injection tests cleanly.
-
-#### [RESOLVED] `_calculate_records_count` defaults unexpected dicts to 1 record
-- **Location**: `app/graph/nodes/verifier.py`
-- **Resolution**: Added checks for explicit error indicators (`error`, `detail`, `errors`, `success: False`), added support for the `locations` collection key, and verified presence of known ERP business record attributes (`KNOWN_RECORD_ATTRS`) before evaluating single dictionary records as valid. Unrecognized dictionaries or dicts with all None values now evaluate to 0.
-
-#### [RESOLVED] Partial tool failure handled inconsistently depending on list order
-- **Location**: `app/graph/nodes/verifier.py`, `app/graph/nodes/tool_node.py`
-- **Resolution**: Multi-tool verification in `verifier_node` now evaluates `multi_verification_status` and plan execution results directly instead of relying on scalar `tool_result is None`. Turns with at least one successful tool returning data are marked `VALID` regardless of list ordering.
-
-#### [RESOLVED] Duplicate tool names overwrite each other in multi-tool results
+#### [RESOLVED] Missing multi-tool collision handling
 - **Location**: `app/graph/nodes/tool_node.py`, `app/graph/nodes/synthesizer.py`
 - **Resolution**: When identical tools are planned within `active_tools`, `tool_node` partitions outputs using composite keys (`f"{tool_name}_{idx}"`) and attaches results to plan dictionaries. `synthesizer_node` reads each plan's distinct result, guaranteeing all products or queries render without collisions.
 
@@ -72,19 +36,16 @@ This repository provides an autonomous LangGraph orchestrator that answers accou
 ---
 
 ### Group 1: Should Fix
-
-*None (all resolved).*
+*(All items in Group 1 resolved)*
 
 ---
 
 ### Group 2: Nice to Have
-
-*None (all resolved).*
+*(All items in Group 2 resolved)*
 
 ---
 
 ## Summary
-- **Verdict**: Healthy. All critical (Must Fix) bugs resolved, tool execution error handling consolidated, and multi-tool empty state filter hints comprehensive.
-- **Lean**: -16 lines, -0 dependencies possible.
-- **Not checked**: Direct live network calls to external Django ERP instances (mocked client used during test execution).
+- **Verdict**: Healthy. All critical (Must Fix) bugs, tool exception handling, domain registries, and multi-tool empty state filter hints resolved.
+- **Lean**: -20 lines, -0 dependencies possible.
 - **Not checked**: Direct live network calls to external Django ERP instances (mocked client used during test execution).

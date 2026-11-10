@@ -201,6 +201,7 @@ class ERPClient:
         endpoint = f"/ai/tools/{domain}/{tool_name}/"
         payload = {
             "company_id": company_id if company_id is not None else self.default_company_id,
+            "params": params or {},
             "parameters": params or {},
         }
         if confirm:
