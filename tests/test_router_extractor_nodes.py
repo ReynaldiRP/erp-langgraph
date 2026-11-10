@@ -235,6 +235,28 @@ class TestRouterNode(unittest.TestCase):
         self.assertEqual(result["detected_domain"], "inventory")
         self.assertEqual(result["detected_tool"], "get_stock_level")
 
+    def test_router_conversational_followup_location_and_retry(self):
+        """Conversational follow-up specifying a branch or retry reuses prior active ERP domain and tool."""
+        history = [
+            HumanMessage(content="coba cek stok AMPLOP BUBBLE 15x18 + 4CM LK"),
+            AIMessage(content="### Informasi Ketersediaan Stok Barang..."),
+        ]
+        state_loc = create_initial_state(
+            user_query="di mainstore",
+            messages=history + [HumanMessage(content="di mainstore")],
+        )
+        res_loc = router_node(state_loc)
+        self.assertEqual(res_loc["detected_domain"], "inventory")
+        self.assertEqual(res_loc["detected_tool"], "get_stock_level")
+
+        state_retry = create_initial_state(
+            user_query="coba cek lagi dimainstore",
+            messages=history + [HumanMessage(content="coba cek lagi dimainstore")],
+        )
+        res_retry = router_node(state_retry)
+        self.assertEqual(res_retry["detected_domain"], "inventory")
+        self.assertEqual(res_retry["detected_tool"], "get_stock_level")
+
     def test_inventory_locations_routing(self):
         """Locations/warehouse inquiries route to get_locations."""
         state1 = create_initial_state("Daftar gudang yang ada")
@@ -525,6 +547,34 @@ class TestExtractorNode(unittest.TestCase):
         params = result.get("extracted_params", {})
 
         self.assertEqual(params.get("code"), "3443")
+        self.assertEqual(params.get("location_name"), "mainstore")
+
+    def test_extractor_product_name_with_special_characters(self):
+        """Extractor extracts product variant names containing '+', '/', '&', '()' special characters."""
+        state = create_initial_state("coba cek stok AMPLOP BUBBLE 15x18 + 4CM LK")
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+
+        result = extractor_node(state)
+        params = result.get("extracted_params", {})
+        self.assertEqual(params.get("code"), "AMPLOP BUBBLE 15x18 + 4CM LK")
+
+    def test_extractor_followup_location_slot_filling_from_history(self):
+        """Extractor slot-fills product code from previous turn when user only supplies location in follow-up."""
+        history = [
+            HumanMessage(content="coba cek stok AMPLOP BUBBLE 15x18 + 4CM LK"),
+            AIMessage(content="### Informasi Produk atau Gudang Belum Spesifik\nUntuk memeriksa ketersediaan stok barang..."),
+        ]
+        state = create_initial_state(
+            user_query="di mainstore",
+            messages=history + [HumanMessage(content="di mainstore")],
+        )
+        state["detected_domain"] = "inventory"
+        state["detected_tool"] = "get_stock_level"
+
+        result = extractor_node(state)
+        params = result.get("extracted_params", {})
+        self.assertEqual(params.get("code"), "AMPLOP BUBBLE 15x18 + 4CM LK")
         self.assertEqual(params.get("location_name"), "mainstore")
 
     def test_extractor_get_locations_query(self):

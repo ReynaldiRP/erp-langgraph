@@ -73,17 +73,30 @@ class JournalEntriesFilterSchema(BaseModel):
 class StockLevelFilterSchema(BaseModel):
     """Input filter schema for inventory.get_stock_level."""
     company_id: Optional[int] = Field(None, description="Company ID")
-    product_id: Optional[int] = Field(None, description="Product Variant ID (either product_id or code required)")
-    code: Optional[str] = Field(None, description="Product SKU code, barcode, or product variant name (either product_id or code required)")
+    product_id: Optional[int] = Field(None, description="Product Variant ID")
+    code: Optional[str] = Field(None, description="Product SKU code, barcode, or product variant name")
+    codes: Optional[List[str]] = Field(None, description="Daftar kode SKU untuk pengecekan batch multi-produk")
+    product_ids: Optional[List[int]] = Field(None, description="Daftar ProductVariant ID untuk pengecekan batch")
+    warehouse_id: Optional[int] = Field(None, description="Filter stok berdasarkan ID Gudang spesifik")
     location_id: Optional[int] = Field(None, description="Optional inventory location ID filter")
     location_name: Optional[str] = Field(None, description="Optional warehouse or location name (e.g. 'mainstore', 'gudang utama')")
+    include_breakdown: Optional[bool] = Field(None, description="Menyertakan array rincian stok per lokasi/gudang")
+    include_cost: Optional[bool] = Field(None, description="Menyertakan perhitungan HPP dan total valuasi nilai stok")
     limit: int = Field(20, ge=1, le=100, description="Max records to return")
     offset: int = Field(0, ge=0, description="Offset for pagination")
 
     @model_validator(mode="after")
     def validate_identifier(self) -> "StockLevelFilterSchema":
-        if self.product_id is None and not self.code:
-            raise ValueError("Either 'product_id' or 'code' (SKU/name) must be provided for stock check.")
+        if (
+            self.product_id is None
+            and not self.code
+            and not self.codes
+            and not self.product_ids
+            and self.warehouse_id is None
+            and self.location_id is None
+            and not self.location_name
+        ):
+            raise ValueError("Either 'product_id' or 'code' (SKU/name), 'warehouse_id', 'location_id', or batch list must be provided for stock check.")
         return self
 
 
@@ -91,8 +104,10 @@ class LocationsFilterSchema(BaseModel):
     """Input filter schema for inventory.get_locations."""
     company_id: Optional[int] = Field(None, description="Company ID (defaults to default company)")
     search: Optional[str] = Field(None, description="Keyword search matching warehouse or location name")
+    warehouse_id: Optional[int] = Field(None, description="Filter lokasi yang berada di bawah gudang tertentu")
     type: Optional[str] = Field(None, description="Location type filter: 'internal', 'customer', 'vendor'")
-    limit: int = Field(20, ge=1, le=50, description="Max results (1-50)")
+    category: Optional[str] = Field(None, description="Kategori operasional lokasi: 'inventory', 'production', 'scrap', 'retur', 'transit', 'adjustment'")
+    limit: int = Field(20, ge=1, le=100, description="Max results (1-100)")
 
 
 class ProductInfoFilterSchema(BaseModel):
@@ -101,8 +116,125 @@ class ProductInfoFilterSchema(BaseModel):
     product_id: Optional[int] = Field(None, description="Specific Product ID")
     code: Optional[str] = Field(None, description="Exact product code / SKU")
     search: Optional[str] = Field(None, description="Keyword search matching product code, name, or reference")
+    category_id: Optional[int] = Field(None, description="Filter berdasarkan ID ProductCategory")
+    can_be_sold: Optional[bool] = Field(None, description="Filter produk yang dapat dijual")
+    can_be_purchased: Optional[bool] = Field(None, description="Filter produk yang dapat dibeli")
     include_variants: bool = Field(True, description="Whether to include variant details")
+    include_cost: Optional[bool] = Field(None, description="Jika true, sertakan estimasi HPP (default_cost)")
     limit: int = Field(10, ge=1, le=50, description="Max results (1-50)")
+    offset: Optional[int] = Field(None, description="Offset pagination")
+
+
+class StockHistoryFilterSchema(BaseModel):
+    """Input filter schema for inventory.get_stock_history (TASK-4.2 / Phase 2)."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    code: Optional[str] = Field(None, description="Kode SKU produk")
+    product_id: Optional[int] = Field(None, description="ID produk")
+    warehouse_id: Optional[int] = Field(None, description="Filter pergerakan di gudang tertentu")
+    location_id: Optional[int] = Field(None, description="Filter pergerakan di lokasi/rak tertentu")
+    operation_type: Optional[str] = Field(None, description="Tipe operasi (e.g. Receipts, Delivery Orders, Scrap)")
+    date_from: Optional[str] = Field(None, description="Tanggal awal YYYY-MM-DD")
+    date_to: Optional[str] = Field(None, description="Tanggal akhir YYYY-MM-DD")
+    source_ref: Optional[str] = Field(None, description="Nomor referensi dokumen transfer asal")
+    limit: int = Field(20, ge=1, le=100, description="Max results (1-100)")
+    offset: int = Field(0, ge=0, description="Offset pagination")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+
+class TransfersFilterSchema(BaseModel):
+    """Input filter schema for inventory.get_transfers (TASK-4.2 / Phase 2)."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    ref: Optional[str] = Field(None, description="Nomor dokumen transfer (e.g. WH/IN/0001)")
+    source_document: Optional[str] = Field(None, description="Nomor PO atau SO asal")
+    status: Optional[str] = Field(None, description="Status dokumen transfer ('Draft', 'Waiting', 'In Progress', 'Done', 'Canceled')")
+    operation_type: Optional[str] = Field(None, description="Nama atau jenis operasi transfer")
+    contact_id: Optional[int] = Field(None, description="ID vendor atau customer terkait")
+    date_from: Optional[str] = Field(None, description="Tanggal awal YYYY-MM-DD")
+    date_to: Optional[str] = Field(None, description="Tanggal akhir YYYY-MM-DD")
+    include_lines: bool = Field(True, description="Sertakan rincian daftar baris barang (TransferLine)")
+    limit: int = Field(20, ge=1, le=50, description="Max results (1-50)")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+
+class LowStockAlertsFilterSchema(BaseModel):
+    """Input filter schema for inventory.get_low_stock_alerts (Phase 3)."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    warehouse_id: Optional[int] = Field(None, description="Filter gudang tertentu")
+    category_id: Optional[int] = Field(None, description="Filter kategori produk")
+    threshold: float = Field(0.0, description="Ambang batas stok (default 0 untuk stok habis/minus)")
+    limit: int = Field(50, ge=1, le=100, description="Batas jumlah record (1-100)")
+
+
+class StockAdjustmentsFilterSchema(BaseModel):
+    """Input filter schema for inventory.get_stock_adjustments (Phase 3)."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    product_id: Optional[int] = Field(None, description="ID produk")
+    location_id: Optional[int] = Field(None, description="ID lokasi")
+    status: Optional[str] = Field(None, description="Status adjustment ('accepted', 'pending', 'cancelled')")
+    date_from: Optional[str] = Field(None, description="Tanggal awal YYYY-MM-DD")
+    date_to: Optional[str] = Field(None, description="Tanggal akhir YYYY-MM-DD")
+    limit: int = Field(20, ge=1, le=100, description="Max results (1-100)")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+
+class ScrapRecordsFilterSchema(BaseModel):
+    """Input filter schema for inventory.get_scrap_records (Phase 3)."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    product_id: Optional[int] = Field(None, description="ID produk")
+    source_location_id: Optional[int] = Field(None, description="ID lokasi asal barang rusak")
+    date_from: Optional[str] = Field(None, description="Tanggal awal YYYY-MM-DD")
+    date_to: Optional[str] = Field(None, description="Tanggal akhir YYYY-MM-DD")
+    limit: int = Field(20, ge=1, le=100, description="Max results (1-100)")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+
+class WarehousesFilterSchema(BaseModel):
+    """Input filter schema for inventory.get_warehouses (Phase 3)."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    search: Optional[str] = Field(None, description="Pencarian nama gudang")
+    include_locations: bool = Field(True, description="Menyertakan rincian lokasi internal di dalam gudang")
+
+
+class ProductCategoriesFilterSchema(BaseModel):
+    """Input filter schema for inventory.get_product_categories (Phase 3)."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    search: Optional[str] = Field(None, description="Pencarian nama kategori produk")
 
 
 class VendorInvoiceFilterSchema(BaseModel):
@@ -213,14 +345,47 @@ class JournalEntriesDataSchema(BaseModel):
 # 2.2 Inventory Tool Data Models
 # ------------------------------------------------------------------------------
 
+class StockBreakdownItem(BaseModel):
+    warehouse_id: Optional[int] = None
+    warehouse_name: Optional[str] = None
+    location_id: Optional[int] = None
+    location_name: Optional[str] = None
+    qty: float = 0.0
+
+
+class StockLevelItem(BaseModel):
+    product_id: Optional[int] = None
+    code: Optional[str] = None
+    name: Optional[str] = None
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+    location_id: Optional[int] = None
+    location_name: Optional[str] = None
+    qty_on_hand: float = 0.0
+    breakdown: Optional[List[StockBreakdownItem]] = None
+
+
 class StockLevelDataSchema(BaseModel):
-    product_id: int
-    code: str
-    name: str
-    company_id: int
-    company_name: str
+    mode: Optional[str] = "single_product"
+    product_id: Optional[int] = None
+    code: Optional[str] = None
+    name: Optional[str] = None
+    company_id: Optional[int] = 1
+    company_name: Optional[str] = None
     location_id: Optional[int] = None
     qty_on_hand: float = 0.0
+    breakdown: Optional[List[StockBreakdownItem]] = None
+    products: Optional[List[StockLevelItem]] = None
+
+
+class ProductCategoryRef(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
+
+
+class UomRef(BaseModel):
+    id: Optional[int] = None
+    name: Optional[str] = None
 
 
 class ProductInfoItem(BaseModel):
@@ -230,15 +395,159 @@ class ProductInfoItem(BaseModel):
     full_name: Optional[str] = None
     internal_reference: Optional[str] = None
     barcode: Optional[str] = None
+    category: Optional[Union[ProductCategoryRef, Dict[str, Any], str]] = None
+    uom: Optional[Union[UomRef, Dict[str, Any], str]] = None
+    purchase_uom: Optional[Union[UomRef, Dict[str, Any], str]] = None
     last_unit_price: float = 0.0
+    default_cost: Optional[float] = None
     can_be_sold: bool = True
     can_be_purchased: bool = True
     is_bundling: bool = False
+    traceability: Optional[str] = None
+    weight: Optional[float] = None
+    volume: Optional[float] = None
 
 
 class ProductInfoDataSchema(BaseModel):
-    total_found: int
+    total_found: int = 0
     products: List[ProductInfoItem] = Field(default_factory=list)
+
+
+class LocationItem(BaseModel):
+    id: int
+    name: str
+    full_name: Optional[str] = None
+    warehouse_id: Optional[int] = None
+    warehouse_name: Optional[str] = None
+    type: Optional[str] = None
+    category: Optional[str] = None
+    parent_id: Optional[int] = None
+
+
+class LocationsDataSchema(BaseModel):
+    total_found: int = 0
+    locations: List[LocationItem] = Field(default_factory=list)
+
+
+class StockHistoryItem(BaseModel):
+    date: Optional[str] = None
+    reference: Optional[str] = None
+    product_id: Optional[int] = None
+    code: Optional[str] = None
+    product_name: Optional[str] = None
+    operation_type: Optional[str] = None
+    location_id: Optional[int] = None
+    location_name: Optional[str] = None
+    qty_done: float = 0.0
+    balance: Optional[float] = None
+
+
+class StockHistoryDataSchema(BaseModel):
+    total_count: int = 0
+    history: List[StockHistoryItem] = Field(default_factory=list)
+
+
+class TransferLineItem(BaseModel):
+    product_id: Optional[int] = None
+    product_code: Optional[str] = None
+    product_name: Optional[str] = None
+    quantity: float = 0.0
+    uom: Optional[str] = None
+
+
+class TransferItem(BaseModel):
+    id: int
+    ref: Optional[str] = None
+    name: Optional[str] = None
+    source_document: Optional[str] = None
+    status: Optional[str] = None
+    operation_type: Optional[str] = None
+    date: Optional[str] = None
+    contact_id: Optional[int] = None
+    contact_name: Optional[str] = None
+    lines: Optional[List[Union[TransferLineItem, Dict[str, Any]]]] = None
+
+
+class TransfersDataSchema(BaseModel):
+    total_count: int = 0
+    transfers: List[TransferItem] = Field(default_factory=list)
+
+
+class LowStockAlertItem(BaseModel):
+    product_id: Optional[int] = None
+    code: Optional[str] = None
+    name: Optional[str] = None
+    warehouse_id: Optional[int] = None
+    warehouse_name: Optional[str] = None
+    qty_on_hand: float = 0.0
+    threshold: float = 0.0
+    min_qty: Optional[float] = None
+
+
+class LowStockAlertsDataSchema(BaseModel):
+    total_found: int = 0
+    alerts: List[LowStockAlertItem] = Field(default_factory=list)
+
+
+class StockAdjustmentItem(BaseModel):
+    id: int
+    reference: Optional[str] = None
+    product_id: Optional[int] = None
+    product_name: Optional[str] = None
+    location_id: Optional[int] = None
+    location_name: Optional[str] = None
+    theoretical_qty: float = 0.0
+    real_qty: float = 0.0
+    difference: float = 0.0
+    status: Optional[str] = None
+    date: Optional[str] = None
+
+
+class StockAdjustmentsDataSchema(BaseModel):
+    total_count: int = 0
+    adjustments: List[StockAdjustmentItem] = Field(default_factory=list)
+
+
+class ScrapRecordItem(BaseModel):
+    id: int
+    reference: Optional[str] = None
+    product_id: Optional[int] = None
+    product_name: Optional[str] = None
+    quantity: float = 0.0
+    source_location_name: Optional[str] = None
+    reason: Optional[str] = None
+    date: Optional[str] = None
+
+
+class ScrapRecordsDataSchema(BaseModel):
+    total_count: int = 0
+    scraps: List[ScrapRecordItem] = Field(default_factory=list)
+
+
+class WarehouseItem(BaseModel):
+    id: int
+    name: str
+    code: Optional[str] = None
+    company_id: Optional[int] = None
+    locations: Optional[List[Dict[str, Any]]] = None
+
+
+class WarehousesDataSchema(BaseModel):
+    total_found: int = 0
+    warehouses: List[WarehouseItem] = Field(default_factory=list)
+
+
+class ProductCategoryItem(BaseModel):
+    id: int
+    name: str
+    parent_id: Optional[int] = None
+    costing_method: Optional[str] = None
+    standard_uom: Optional[str] = None
+
+
+class ProductCategoriesDataSchema(BaseModel):
+    total_found: int = 0
+    categories: List[ProductCategoryItem] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------------------
@@ -258,6 +567,38 @@ class StockLevelResponseSchema(ERPResponseEnvelope[StockLevelDataSchema]):
 
 
 class ProductInfoResponseSchema(ERPResponseEnvelope[ProductInfoDataSchema]):
+    pass
+
+
+class LocationsResponseSchema(ERPResponseEnvelope[LocationsDataSchema]):
+    pass
+
+
+class StockHistoryResponseSchema(ERPResponseEnvelope[StockHistoryDataSchema]):
+    pass
+
+
+class TransfersResponseSchema(ERPResponseEnvelope[TransfersDataSchema]):
+    pass
+
+
+class LowStockAlertsResponseSchema(ERPResponseEnvelope[LowStockAlertsDataSchema]):
+    pass
+
+
+class StockAdjustmentsResponseSchema(ERPResponseEnvelope[StockAdjustmentsDataSchema]):
+    pass
+
+
+class ScrapRecordsResponseSchema(ERPResponseEnvelope[ScrapRecordsDataSchema]):
+    pass
+
+
+class WarehousesResponseSchema(ERPResponseEnvelope[WarehousesDataSchema]):
+    pass
+
+
+class ProductCategoriesResponseSchema(ERPResponseEnvelope[ProductCategoriesDataSchema]):
     pass
 
 
@@ -304,5 +645,12 @@ TOOL_DOMAIN_MAP: Dict[str, str] = {
     "get_stock_level": "inventory",
     "get_product_info": "inventory",
     "get_locations": "inventory",
+    "get_stock_history": "inventory",
+    "get_transfers": "inventory",
+    "get_low_stock_alerts": "inventory",
+    "get_stock_adjustments": "inventory",
+    "get_scrap_records": "inventory",
+    "get_warehouses": "inventory",
+    "get_product_categories": "inventory",
 }
 

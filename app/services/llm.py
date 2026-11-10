@@ -24,11 +24,12 @@ _CACHE_LOCK = threading.Lock()
 # Curated fallback list when offline or when dynamic lookup is unavailable
 DEFAULT_CURATED_FREE_MODELS = [
     "openrouter/free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "liquid/lfm-2.5-2.6b:free",
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
+    "liquid/lfm-3-1.7b:free",
     "nvidia/nemotron-3.5-lightning:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
     "recursive/flint-v1.0:free",
 ]
 
@@ -257,12 +258,26 @@ def get_chat_model(
             raise ValueError("OPENAI_API_KEY environment variable is required when MODEL_PROVIDER=openai")
 
         target_model = model_name or settings.OPENAI_MODEL
-        return ChatOpenAI(
+        primary_model = ChatOpenAI(
             model=target_model,
             api_key=api_key,
             temperature=temperature,
             request_timeout=settings.REQUEST_TIMEOUT_SEC,
         )
+
+        if enable_fallback and settings.OPENROUTER_API_KEY:
+            try:
+                or_model = get_chat_model(
+                    provider="openrouter",
+                    fallback_models=fallback_models,
+                    enable_fallback=True,
+                    temperature=temperature,
+                )
+                return primary_model.with_fallbacks([or_model])
+            except Exception as exc:
+                logger.warning(f"Could not configure OpenRouter fallback for OpenAI model: {exc}")
+
+        return primary_model
 
     else:
         raise ValueError(

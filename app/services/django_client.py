@@ -18,6 +18,13 @@ from app.schemas.tools import (
     StockLevelFilterSchema,
     ProductInfoFilterSchema,
     LocationsFilterSchema,
+    StockHistoryFilterSchema,
+    TransfersFilterSchema,
+    LowStockAlertsFilterSchema,
+    StockAdjustmentsFilterSchema,
+    ScrapRecordsFilterSchema,
+    WarehousesFilterSchema,
+    ProductCategoriesFilterSchema,
 )
 
 logger = logging.getLogger("django_client")
@@ -441,6 +448,111 @@ class DjangoCoreClient:
         return await self.execute_tool(
             domain="inventory",
             tool_name="get_locations",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_stock_history(
+        self,
+        params: Optional[Union[StockHistoryFilterSchema, Dict[str, Any]]] = None,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call inventory.get_stock_history tool (Phase 2)."""
+        return await self.execute_tool(
+            domain="inventory",
+            tool_name="get_stock_history",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_transfers(
+        self,
+        params: Optional[Union[TransfersFilterSchema, Dict[str, Any]]] = None,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call inventory.get_transfers tool (Phase 2)."""
+        return await self.execute_tool(
+            domain="inventory",
+            tool_name="get_transfers",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_low_stock_alerts(
+        self,
+        params: Optional[Union[LowStockAlertsFilterSchema, Dict[str, Any]]] = None,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call inventory.get_low_stock_alerts tool (Phase 3)."""
+        return await self.execute_tool(
+            domain="inventory",
+            tool_name="get_low_stock_alerts",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_stock_adjustments(
+        self,
+        params: Optional[Union[StockAdjustmentsFilterSchema, Dict[str, Any]]] = None,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call inventory.get_stock_adjustments tool (Phase 3)."""
+        return await self.execute_tool(
+            domain="inventory",
+            tool_name="get_stock_adjustments",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_scrap_records(
+        self,
+        params: Optional[Union[ScrapRecordsFilterSchema, Dict[str, Any]]] = None,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call inventory.get_scrap_records tool (Phase 3)."""
+        return await self.execute_tool(
+            domain="inventory",
+            tool_name="get_scrap_records",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_warehouses(
+        self,
+        params: Optional[Union[WarehousesFilterSchema, Dict[str, Any]]] = None,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call inventory.get_warehouses tool (Phase 3)."""
+        return await self.execute_tool(
+            domain="inventory",
+            tool_name="get_warehouses",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_product_categories(
+        self,
+        params: Optional[Union[ProductCategoriesFilterSchema, Dict[str, Any]]] = None,
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call inventory.get_product_categories tool (Phase 3)."""
+        return await self.execute_tool(
+            domain="inventory",
+            tool_name="get_product_categories",
             params=_clean_params(params),
             company_id=company_id,
             user_token=user_token,

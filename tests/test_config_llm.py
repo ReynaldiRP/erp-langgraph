@@ -25,6 +25,7 @@ class TestCentralizedConfig(unittest.TestCase):
         self.assertEqual(settings.APP_NAME, "erp-ai-orchestrator")
         default_settings = Settings(_env_file=None)
         self.assertEqual(default_settings.DEFAULT_COMPANY_ID, 1)
+        self.assertEqual(default_settings.APP_PORT, 8002)
         self.assertIsInstance(settings.DEFAULT_COMPANY_ID, int)
         self.assertEqual(settings.REQUEST_TIMEOUT_SEC, 15)
         self.assertIn(settings.MODEL_PROVIDER, ["openrouter", "openai"])

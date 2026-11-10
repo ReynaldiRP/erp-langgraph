@@ -31,6 +31,13 @@ class PlannedToolCall(BaseModel):
         "get_stock_level",
         "get_product_info",
         "get_locations",
+        "get_stock_history",
+        "get_transfers",
+        "get_low_stock_alerts",
+        "get_stock_adjustments",
+        "get_scrap_records",
+        "get_warehouses",
+        "get_product_categories",
     ] = Field(..., description="Target ERP tool name.")
     domain: Literal["accounting", "inventory"] = Field(
         ...,
@@ -67,6 +74,13 @@ class RouterDecision(BaseModel):
         "get_stock_level",
         "get_product_info",
         "get_locations",
+        "get_stock_history",
+        "get_transfers",
+        "get_low_stock_alerts",
+        "get_stock_adjustments",
+        "get_scrap_records",
+        "get_warehouses",
+        "get_product_categories",
     ]] = Field(
         None,
         description="Target tool name to invoke in ERP backend, or null if knowledge / general / out_of_scope."
@@ -105,6 +119,13 @@ class MultiRouterDecision(BaseModel):
         "get_stock_level",
         "get_product_info",
         "get_locations",
+        "get_stock_history",
+        "get_transfers",
+        "get_low_stock_alerts",
+        "get_stock_adjustments",
+        "get_scrap_records",
+        "get_warehouses",
+        "get_product_categories",
     ]] = Field(
         None,
         description="Primary target tool name (for backward compatibility), or null if general/out_of_scope/knowledge."
@@ -188,7 +209,77 @@ INVENTORY_STOCK_PATTERNS = [
     r"\bon hand\b",
 ]
 
+INVENTORY_STOCK_HISTORY_PATTERNS = [
+    r"\bkartu\s+stok\b",
+    r"\briwayat\s+(mutasi|stok|pergerakan)\b",
+    r"\bmutasi\s+stok\b",
+    r"\bpergerakan\s+(stok|barang)\b",
+    r"\bbuku\s+besar\s+stok\b",
+    r"\bstock\s+history\b",
+    r"\bhistory\s+stok\b",
+    r"\bkartu\s+persediaan\b",
+]
+
+INVENTORY_TRANSFERS_PATTERNS = [
+    r"\bsurat\s+jalan\b",
+    r"\btransfer\s+(barang|gudang|stok|internal)\b",
+    r"\bmutasi\s+(antar\s+gudang|barang)\b",
+    r"\bpengiriman\s+barang\b",
+    r"\bpenerimaan\s+barang\b",
+    r"\bdelivery\s+order\b",
+    r"\bwh/(?:in|out)/\d+\b",
+    r"\bdokumen\s+transfer\b",
+]
+
+INVENTORY_LOW_STOCK_PATTERNS = [
+    r"\bstok(nya)?\s+(menipis|habis|kritis|minimum|kurang|minus|sedikit)\b",
+    r"\bstok(nya)?\s+.*?(menipis|habis|kritis|minimum)\b",
+    r"\blow\s+stock\b",
+    r"\balert\s+stok\b",
+    r"\bstok\s+alert\b",
+    r"\bdi\s*bawah\s+minimum\b",
+    r"\bperingatan\s+stok\b",
+]
+
+INVENTORY_ADJUSTMENTS_PATTERNS = [
+    r"\bstock\s+opname\b",
+    r"\bstok\s+opname\b",
+    r"\bpenyesuaian\s+stok\b",
+    r"\badjustment\s+stok\b",
+    r"\bselisih\s+stok\b",
+    r"\bkoreksi\s+stok\b",
+    r"\bhasil\s+opname\b",
+]
+
+INVENTORY_SCRAP_PATTERNS = [
+    r"\bbarang\s+(rusak|cacat|scrap)\b",
+    r"\bscrap\s*(order|record)?\b",
+    r"\bpemusnahan\s+barang\b",
+    r"\bproduk\s+rusak\b",
+    r"\bcatatan\s+scrap\b",
+]
+
+INVENTORY_WAREHOUSES_PATTERNS = [
+    r"\bmaster\s+gudang\b",
+    r"\b(daftar|list)\s+master\s+gudang\b",
+    r"\bhierarki\s+gudang\b",
+    r"\bmaster\s+warehouses?\b",
+    r"\binfo\s+master\s+gudang\b",
+]
+
+INVENTORY_CATEGORIES_PATTERNS = [
+    r"\bkategori\s+(produk|barang)\b",
+    r"\bmaster\s+kategori\b",
+    r"\bdaftar\s+kategori\b",
+    r"\bproduct\s+categor(?:y|ies)\b",
+]
+
 INVENTORY_LOCATION_PATTERNS = [
+    r"\b(daftar|list|semua|info|data)\s+(lokasi|rak)\b",
+    r"\b(daftar|list)\s+(lokasi|rak)\b",
+    r"\bada\s+(lokasi|rak)\b",
+    r"\b(lokasi|rak)\s+(apa\s+saja|tersedia|aktif)\b",
+    r"^(lokasi|rak)\b",
     r"\b(daftar|list|semua|info|data)\s+(gudang|lokasi|warehouse)\b",
     r"\b(daftar|list)\s+(gudang|lokasi|warehouse)\b",
     r"\bada\s+(gudang|lokasi|warehouse)\b",
@@ -407,14 +498,49 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
         if not is_journal_saldo_only:
             candidates.append(("get_account_balance", "accounting", m_bal.start()))
 
-    # Inventory: Stock levels
+    # Inventory: Stock history (Kartu Stok / Riwayat Mutasi)
+    m_history = _find_first_match(INVENTORY_STOCK_HISTORY_PATTERNS, cleaned)
+    if m_history:
+        candidates.append(("get_stock_history", "inventory", m_history.start()))
+
+    # Inventory: Transfers (Surat Jalan / Transfer Gudang / DO)
+    m_transfers = _find_first_match(INVENTORY_TRANSFERS_PATTERNS, cleaned)
+    if m_transfers:
+        candidates.append(("get_transfers", "inventory", m_transfers.start()))
+
+    # Inventory: Low stock alerts (Stok Menipis / Kritis / Habis)
+    m_low_stock = _find_first_match(INVENTORY_LOW_STOCK_PATTERNS, cleaned)
+    if m_low_stock:
+        candidates.append(("get_low_stock_alerts", "inventory", m_low_stock.start()))
+
+    # Inventory: Stock adjustments (Stock Opname / Selisih Stok)
+    m_adjustments = _find_first_match(INVENTORY_ADJUSTMENTS_PATTERNS, cleaned)
+    if m_adjustments:
+        candidates.append(("get_stock_adjustments", "inventory", m_adjustments.start()))
+
+    # Inventory: Scrap records (Barang Rusak / Cacat / Pemusnahan)
+    m_scrap = _find_first_match(INVENTORY_SCRAP_PATTERNS, cleaned)
+    if m_scrap:
+        candidates.append(("get_scrap_records", "inventory", m_scrap.start()))
+
+    # Inventory: Warehouses (Master Gudang)
+    m_warehouses = _find_first_match(INVENTORY_WAREHOUSES_PATTERNS, cleaned)
+    if m_warehouses:
+        candidates.append(("get_warehouses", "inventory", m_warehouses.start()))
+
+    # Inventory: Product categories (Master Kategori Produk)
+    m_categories = _find_first_match(INVENTORY_CATEGORIES_PATTERNS, cleaned)
+    if m_categories:
+        candidates.append(("get_product_categories", "inventory", m_categories.start()))
+
+    # Inventory: Stock levels (Physical on-hand inventory)
     m_stock = _find_first_match(INVENTORY_STOCK_PATTERNS, cleaned)
-    if m_stock:
+    if m_stock and not m_history and not m_low_stock and not m_adjustments and not m_scrap:
         candidates.append(("get_stock_level", "inventory", m_stock.start()))
 
-    # Inventory: Locations / Warehouses
+    # Inventory: Locations (Rak / Lokasi Penyimpanan)
     m_loc = _find_first_match(INVENTORY_LOCATION_PATTERNS, cleaned)
-    if m_loc:
+    if m_loc and not m_warehouses:
         candidates.append(("get_locations", "inventory", m_loc.start()))
 
     # Inventory: Product info
@@ -619,6 +745,52 @@ def router_node(
             return rule_result
     except Exception as exc:
         logger.warning(f"Error in rule-based classifier for query '{user_query}': {exc}")
+
+    # Step 1.5: Fast Conversational Follow-up / Slot Refinement Check
+    # Matches branch/location mentions ('di mainstore', 'di cabang bandung'),
+    # retry/check follow-ups ('coba cek lagi dimainstore'), or entity refinements
+    # when an active ERP inquiry exists in prior messages.
+    history_messages = state.get("messages") or []
+    if len(history_messages) > 1:
+        prior_q = find_previous_user_query(history_messages)
+        if prior_q:
+            from app.graph.nodes.extractor import resolve_branch_company_id
+
+            clean_uq = user_query.strip().lower()
+            is_branch_mention = bool(resolve_branch_company_id(clean_uq)) or bool(
+                re.search(r"\b(?:di\s+|cabang\s+|gudang\s+|lokasi\s+|rak\s+)([A-Za-z0-9\_\-]+)", clean_uq)
+            )
+            is_followup_retry = bool(
+                re.search(r"\b(coba\s+cek\s+lagi|cek\s+lagi|coba\s+lagi|ulang(i)?|tes\s+lagi)\b", clean_uq)
+            )
+            is_short_followup = len(clean_uq.split()) <= 7 and (is_branch_mention or is_followup_retry)
+
+            if is_short_followup:
+                try:
+                    prior_result = classify_query_rule_based(prior_q)
+                    if prior_result is not None and prior_result.get("detected_domain") in ("accounting", "inventory"):
+                        followup_tools = [
+                            {
+                                "tool": t["tool"],
+                                "domain": t["domain"],
+                                "sub_query": user_query,
+                                "params": {},
+                                "status": "pending",
+                            }
+                            for t in prior_result.get("active_tools", [])
+                        ]
+                        return {
+                            "detected_domain": prior_result.get("detected_domain"),
+                            "detected_tool": prior_result.get("detected_tool"),
+                            "query_mode": prior_result.get("query_mode", "live_erp"),
+                            "rag_query": None,
+                            "is_multi_tool": prior_result.get("is_multi_tool", False),
+                            "detected_domains": prior_result.get("detected_domains", []),
+                            "detected_tools": prior_result.get("detected_tools", []),
+                            "active_tools": followup_tools,
+                        }
+                except Exception as exc:
+                    logger.warning(f"Error resolving conversational follow-up: {exc}")
 
     # Step 2: Fallback to LLM Structured Output (Context-Aware)
     model = llm
