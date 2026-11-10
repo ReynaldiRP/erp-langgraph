@@ -446,6 +446,18 @@ def format_deterministic_answer(state: AgentState) -> str:
                 f"- Periksa apakah produk tersebut aktif dan tidak dalam status diarsipkan (archive) di ERP."
             )
 
+        if "MISSING_PRODUCT_IDENTIFIER" in msg:
+            return (
+                "### Informasi Produk atau Gudang Belum Spesifik\n\n"
+                "Untuk memeriksa ketersediaan stok barang pada FastPrint ERP, mohon sertakan salah satu informasi berikut:\n"
+                "- **Kode SKU / Barcode / Nama Produk** (contoh: `HVS-A4-70`, `Tinta Epson 664`, `Kertas Art Paper`)\n"
+                "- **Nama Gudang / Lokasi Rak** jika ingin memindai seluruh stok gudang (contoh: `Gudang Surabaya`, `Gudang Cabang Bandung`)\n\n"
+                "**Contoh pertanyaan yang dapat diajukan**:\n"
+                "- *\"Berapa stok Kertas HVS A4 saat ini?\"*\n"
+                "- *\"Cek stok SKU HVS-A4-70 di Gudang Surabaya\"*\n"
+                "- *\"Tampilkan stok barang di Gudang Cabang Jakarta\"*"
+            )
+
         return (
             f"### Kendala Akses Data ERP\n\n"
             f"Permintaan Anda tidak dapat diproses karena terjadi kendala teknis:\n"

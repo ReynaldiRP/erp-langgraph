@@ -321,7 +321,7 @@ def _fallback_extract_stock_level(
     cleaned = re.sub(r"[^\w\)]+$", "", (query or "").strip(), flags=re.UNICODE).strip()
 
     loc_match = re.search(
-        r"\bdi\s+(?:gudang\s+|lokasi\s+)?([A-Za-z0-9\_\-]+)",
+        r"(?:\bdi\s+(?:gudang\s+|lokasi\s+)?|\b(?:gudang|lokasi)\s+)([A-Za-z0-9\_\-]+)",
         cleaned,
         re.IGNORECASE,
     )

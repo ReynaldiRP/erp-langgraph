@@ -34,6 +34,7 @@ from app.schemas.tools import (
 )
 from app.graph.nodes.router import router_node
 from app.graph.nodes.extractor import (
+    _fallback_extract_stock_level,
     _fallback_extract_stock_history,
     _fallback_extract_transfers,
     _fallback_extract_low_stock_alerts,
@@ -461,3 +462,69 @@ class TestInventoryDjangoClientMethods(unittest.IsolatedAsyncioTestCase):
             company_id=None,
             user_token=None,
         )
+
+
+class TestStockIdentifierAndWarehouseResolution(unittest.IsolatedAsyncioTestCase):
+    """Test suite for warehouse fallback lookup and missing product identifier guidance."""
+
+    def test_fallback_extract_stock_level_with_gudang_prefix(self):
+        """Extracts location_name when user query uses 'gudang <name>' or 'di gudang <name>'."""
+        params1 = _fallback_extract_stock_level("cek stok gudang surabaya")
+        self.assertEqual(params1.get("location_name"), "surabaya")
+
+        params2 = _fallback_extract_stock_level("cek stok di gudang bandung")
+        self.assertEqual(params2.get("location_name"), "bandung")
+
+        params3 = _fallback_extract_stock_level("stok di surabaya")
+        self.assertEqual(params3.get("location_name"), "surabaya")
+
+    async def test_tool_node_resolves_warehouse_fallback(self):
+        """When location lookup yields 0 results, tool_node resolves warehouse_id via fetch_warehouses."""
+        mock_client = MagicMock(spec=DjangoCoreClient)
+        # 1. fetch_locations returns empty list
+        mock_client.fetch_locations = AsyncMock(return_value={"locations": []})
+        # 2. fetch_warehouses returns warehouse match
+        mock_client.fetch_warehouses = AsyncMock(return_value={"warehouses": [{"id": 7, "name": "Gudang Surabaya"}]})
+        # 3. fetch_stock_level succeeds with resolved warehouse_id
+        mock_client.fetch_stock_level = AsyncMock(return_value={"products": [], "total_count": 0, "warehouse_name": "Gudang Surabaya"})
+
+        state = {
+            "user_query": "cek stok gudang surabaya",
+            "detected_tool": "get_stock_level",
+            "extracted_params": {"location_name": "surabaya"},
+            "company_id": 1,
+        }
+
+        res = await tool_node(state, client=mock_client)
+
+        mock_client.fetch_locations.assert_called_once()
+        mock_client.fetch_warehouses.assert_called_once()
+        mock_client.fetch_stock_level.assert_called_once()
+
+        call_kwargs = mock_client.fetch_stock_level.call_args[1]
+        self.assertEqual(call_kwargs["params"].get("warehouse_id"), 7)
+        self.assertEqual(res["verification_status"], "VALID")
+
+    def test_synthesizer_missing_product_identifier(self):
+        """Synthesizer provides clear Indonesian guidance when MISSING_PRODUCT_IDENTIFIER error occurs."""
+        state = {
+            "user_query": "cek stok",
+            "detected_domain": "inventory",
+            "detected_tool": "get_stock_level",
+            "verification_status": "ERROR",
+            "error_message": (
+                'Django Core request failed with status 400: {"success": false, "data": null, '
+                '"error": {"code": "MISSING_PRODUCT_IDENTIFIER", "message": "Either a product identifier '
+                "('product_id', 'code', 'codes', 'product_ids') or a location filter ('location_id', 'warehouse_id') "
+                'must be provided.", "details": {}}}'
+            ),
+        }
+
+        ans = synthesizer_node(state)
+        final_answer = ans["final_answer"]
+
+        self.assertIn("Informasi Produk atau Gudang Belum Spesifik", final_answer)
+        self.assertIn("Kode SKU / Barcode / Nama Produk", final_answer)
+        self.assertIn("Nama Gudang / Lokasi Rak", final_answer)
+        self.assertIn("HVS-A4-70", final_answer)
+

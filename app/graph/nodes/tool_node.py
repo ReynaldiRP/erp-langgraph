@@ -44,8 +44,17 @@ async def _execute_single_tool(
             if not re.search(r"\b[A-Za-z0-9_\-]+/\d{4}/\d+\b", cand) and not any(cand.upper().startswith(p) for p in ("JE/", "PC/", "INV/", "BILL/")):
                 clean_params["vendor_name"] = clean_params["search"]
 
-    # Pre-lookup for stock location_name -> location_id
-    if tool_name == "get_stock_level" and clean_params.get("location_name") and not clean_params.get("location_id"):
+    # Adapt parameters for stock level inquiries
+    if tool_name == "get_stock_level":
+        if "search" in clean_params and not clean_params.get("code"):
+            clean_params["code"] = clean_params["search"]
+        if "sku" in clean_params and not clean_params.get("code"):
+            clean_params["code"] = clean_params["sku"]
+        if "product_code" in clean_params and not clean_params.get("code"):
+            clean_params["code"] = clean_params["product_code"]
+
+    # Pre-lookup for stock location_name -> location_id or warehouse_id
+    if tool_name == "get_stock_level" and clean_params.get("location_name") and not clean_params.get("location_id") and not clean_params.get("warehouse_id"):
         try:
             loc_res = await erp_client.fetch_locations(
                 params={"search": clean_params["location_name"]},
@@ -57,6 +66,18 @@ async def _execute_single_tool(
                 matched_loc = locations[0]
                 clean_params["location_id"] = matched_loc.get("id")
                 clean_params["matched_location_name"] = matched_loc.get("name")
+            else:
+                # Fallback to warehouse lookup if location was not found
+                wh_res = await erp_client.fetch_warehouses(
+                    params={"search": clean_params["location_name"]},
+                    user_token=user_token,
+                    company_id=target_company_id,
+                )
+                warehouses = wh_res.get("warehouses", []) if isinstance(wh_res, dict) else (wh_res if isinstance(wh_res, list) else [])
+                if warehouses:
+                    matched_wh = warehouses[0]
+                    clean_params["warehouse_id"] = matched_wh.get("id")
+                    clean_params["matched_location_name"] = matched_wh.get("name")
         except Exception as loc_err:
             logger.warning(f"Could not resolve location_name '{clean_params.get('location_name')}': {loc_err}")
 
