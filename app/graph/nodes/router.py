@@ -336,7 +336,7 @@ OUT_OF_SCOPE_PATTERNS = [
 ]
 
 RETRY_PATTERNS = [
-    r"^(tolong\s+|mohon\s+|silakan\s+)?(coba\s+lagi|ulang(i)?|coba\s+ulang|ulangi\s+lagi|sekali\s+lagi|coba\s+sekali\s+lagi|retry|tes\s+lagi)(\s+dong|\s+ya)?$",
+    r"^(?:(?:bisa\s+)?tolong\s+|mohon\s+|silakan\s+|bisa\s+)?(?:coba\s+(?:(?:di)?cek\s+|(?:di)?periksa\s+|(?:di)?cari\s+|(?:di)?lihat\s+)?(?:lagi|ulang)|(?:coba\s+)?(?:di)?cek\s+(?:sekali\s+)?(?:lagi|ulang)|(?:coba\s+)?(?:di)?periksa\s+(?:sekali\s+)?(?:lagi|ulang)|(?:coba\s+)?(?:di)?cari\s+(?:sekali\s+)?(?:lagi|ulang)|ulang(i)?|coba\s+ulang|ulangi\s+lagi|sekali\s+lagi|coba\s+sekali\s+lagi|retry|tes\s+lagi)(?:\s+dong|\s+ya|\s+deh|\s+bro|\s+kak|\s+mas|\s+mbak|\s+min|\s+gan|\s+pak|\s+bu)?$",
 ]
 
 
@@ -367,7 +367,7 @@ def _extract_sub_queries(query: str, candidates: List[Tuple[str, str, int]]) -> 
     if len(candidates) <= 1:
         return [query] * len(candidates)
 
-    parts = re.split(r"\b(?:dan|serta|sekaligus|juga|lalu)\b|;|,", query, flags=re.IGNORECASE)
+    parts = re.split(r"\b(?:dan|serta|sekaligus|juga|lalu)\b|;|(?<!\d),(?!\d)", query, flags=re.IGNORECASE)
     cleaned_parts = [p.strip() for p in parts if p.strip()]
 
     if len(cleaned_parts) == len(candidates):
@@ -378,7 +378,7 @@ def _extract_sub_queries(query: str, candidates: List[Tuple[str, str, int]]) -> 
 
 def is_retry_query(text: str) -> bool:
     """Check if the text represents a conversational retry command."""
-    cleaned = (text or "").strip().lower()
+    cleaned = (text or "").strip().rstrip("?!.,;: '\"").lower()
     return _match_any(RETRY_PATTERNS, cleaned)
 
 
@@ -465,7 +465,7 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
             candidates.append(("fetch_vendor_invoices", "accounting", min(matches)))
 
     # Accounting: Specific document number reference (e.g. PC/2026/00002, BDG/JE/2026/00009, JE/2026/001)
-    doc_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", cleaned)
+    doc_match = re.search(r"\b((?:[A-Za-z0-9_\-]+/)+\d{4}/\d+)\b", cleaned)
     if doc_match and not any(c[0] in ("fetch_vendor_invoices", "get_journal_entries") for c in candidates):
         doc_code = doc_match.group(1).upper()
         if "JE" in doc_code:
@@ -756,12 +756,12 @@ def router_node(
         if prior_q:
             from app.graph.nodes.extractor import resolve_branch_company_id
 
-            clean_uq = user_query.strip().lower()
+            clean_uq = user_query.strip().rstrip("?!.,;: '\"").lower()
             is_branch_mention = bool(resolve_branch_company_id(clean_uq)) or bool(
                 re.search(r"\b(?:di\s+|cabang\s+|gudang\s+|lokasi\s+|rak\s+)([A-Za-z0-9\_\-]+)", clean_uq)
             )
-            is_followup_retry = bool(
-                re.search(r"\b(coba\s+cek\s+lagi|cek\s+lagi|coba\s+lagi|ulang(i)?|tes\s+lagi)\b", clean_uq)
+            is_followup_retry = is_retry_query(clean_uq) or bool(
+                re.search(r"\b(coba\s+(?:(?:di)?cek\s+|(?:di)?periksa\s+|(?:di)?cari\s+)?lagi|(?:di)?cek\s+lagi|coba\s+lagi|ulang(i)?|tes\s+lagi|(?:di)?cek\s+ulang)\b", clean_uq)
             )
             is_short_followup = len(clean_uq.split()) <= 7 and (is_branch_mention or is_followup_retry)
 
@@ -769,17 +769,20 @@ def router_node(
                 try:
                     prior_result = classify_query_rule_based(prior_q)
                     if prior_result is not None and prior_result.get("detected_domain") in ("accounting", "inventory"):
+                        effective_sub = user_query if is_branch_mention else prior_q
+                        effective_user = f"{prior_q} {user_query}" if is_branch_mention else prior_q
                         followup_tools = [
                             {
                                 "tool": t["tool"],
                                 "domain": t["domain"],
-                                "sub_query": user_query,
+                                "sub_query": effective_sub,
                                 "params": {},
                                 "status": "pending",
                             }
                             for t in prior_result.get("active_tools", [])
                         ]
                         return {
+                            "user_query": effective_user,
                             "detected_domain": prior_result.get("detected_domain"),
                             "detected_tool": prior_result.get("detected_tool"),
                             "query_mode": prior_result.get("query_mode", "live_erp"),
@@ -791,6 +794,46 @@ def router_node(
                         }
                 except Exception as exc:
                     logger.warning(f"Error resolving conversational follow-up: {exc}")
+
+            # Heuristic Short Follow-Up: If query <= 6 words with no new domain intent,
+            # and prior ERP query exists, treat as conversational follow-up to prior domain
+            has_new_domain_intent = (
+                any(term in clean_uq for term in CUSTOMER_TERMS)
+                or any(term in clean_uq for term in VENDOR_TERMS)
+                or _match_any(GREETING_PATTERNS, clean_uq)
+                or _match_any(OUT_OF_SCOPE_PATTERNS, clean_uq)
+                or _match_any(ACCOUNTING_BALANCE_PATTERNS, clean_uq)
+                or _match_any(ACCOUNTING_JOURNAL_PATTERNS, clean_uq)
+                or _match_any(KNOWLEDGE_RAG_PATTERNS, clean_uq)
+            )
+            if len(clean_uq.split()) <= 6 and not has_new_domain_intent:
+                try:
+                    prior_result = classify_query_rule_based(prior_q)
+                    if prior_result is not None and prior_result.get("detected_domain") in ("accounting", "inventory"):
+                        effective_sub = f"{prior_q} {user_query}"
+                        followup_tools = [
+                            {
+                                "tool": t["tool"],
+                                "domain": t["domain"],
+                                "sub_query": effective_sub,
+                                "params": {},
+                                "status": "pending",
+                            }
+                            for t in prior_result.get("active_tools", [])
+                        ]
+                        return {
+                            "user_query": effective_sub,
+                            "detected_domain": prior_result.get("detected_domain"),
+                            "detected_tool": prior_result.get("detected_tool"),
+                            "query_mode": prior_result.get("query_mode", "live_erp"),
+                            "rag_query": None,
+                            "is_multi_tool": prior_result.get("is_multi_tool", False),
+                            "detected_domains": prior_result.get("detected_domains", []),
+                            "detected_tools": prior_result.get("detected_tools", []),
+                            "active_tools": followup_tools,
+                        }
+                except Exception as exc:
+                    logger.warning(f"Error in heuristic short follow-up routing: {exc}")
 
     # Step 2: Fallback to LLM Structured Output (Context-Aware)
     model = llm

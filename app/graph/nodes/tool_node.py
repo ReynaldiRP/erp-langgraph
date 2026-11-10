@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
-from app.core.context import sanitize_erp_payload
+from app.core.context import sanitize_erp_payload, clean_product_identifier
 from app.graph.state import AgentState
 from app.services.django_client import (
     DjangoCoreClient,
@@ -41,7 +41,7 @@ async def _execute_single_tool(
         elif "search" in clean_params and not clean_params.get("vendor_name"):
             cand = str(clean_params["search"]).strip()
             # Do not promote search to vendor_name if it is a document number pattern
-            if not re.search(r"\b[A-Za-z0-9_\-]+/\d{4}/\d+\b", cand) and not any(cand.upper().startswith(p) for p in ("JE/", "PC/", "INV/", "BILL/")):
+            if not re.search(r"\b(?:[A-Za-z0-9_\-]+/)+\d{4}/\d+\b", cand) and not any(cand.upper().startswith(p) for p in ("JE/", "PC/", "INV/", "BILL/")):
                 clean_params["vendor_name"] = clean_params["search"]
 
     # Adapt parameters for stock level inquiries
@@ -52,6 +52,15 @@ async def _execute_single_tool(
             clean_params["code"] = clean_params["sku"]
         if "product_code" in clean_params and not clean_params.get("code"):
             clean_params["code"] = clean_params["product_code"]
+
+    # Sanitize product identifier fields across inventory and product tools
+    for k in ("code", "search", "sku", "product_code"):
+        if k in clean_params and isinstance(clean_params[k], str):
+            clean_params[k] = clean_product_identifier(clean_params[k])
+    if "codes" in clean_params and isinstance(clean_params["codes"], list):
+        clean_params["codes"] = [
+            clean_product_identifier(c) for c in clean_params["codes"] if c and isinstance(c, str)
+        ]
 
     # Pre-lookup for stock location_name -> location_id or warehouse_id
     if tool_name == "get_stock_level" and clean_params.get("location_name") and not clean_params.get("location_id") and not clean_params.get("warehouse_id"):

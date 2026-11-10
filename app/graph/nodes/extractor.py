@@ -16,7 +16,11 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.core.context import trim_conversation_messages, build_contextual_prompt
+from app.core.context import (
+    trim_conversation_messages,
+    build_contextual_prompt,
+    clean_product_identifier,
+)
 from app.graph.state import AgentState, ToolCallPlan
 from app.schemas.tools import (
     AccountBalanceFilterSchema,
@@ -149,8 +153,20 @@ def resolve_relative_dates(
     today = ref_date or date.today()
     cleaned = text.lower()
 
-    # 1. Check for explicit YYYY-MM-DD dates
-    explicit_dates = re.findall(r"\b(\d{4}-\d{2}-\d{2})\b", cleaned)
+    # 1. Check for explicit dates (YYYY-MM-DD, YYYY/MM/DD, DD/MM/YYYY, DD-MM-YYYY)
+    explicit_dates = []
+    for m in re.finditer(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b", cleaned):
+        try:
+            explicit_dates.append(date(int(m.group(1)), int(m.group(2)), int(m.group(3))).strftime("%Y-%m-%d"))
+        except ValueError:
+            pass
+    if not explicit_dates:
+        for m in re.finditer(r"\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b", cleaned):
+            try:
+                explicit_dates.append(date(int(m.group(3)), int(m.group(2)), int(m.group(1))).strftime("%Y-%m-%d"))
+            except ValueError:
+                pass
+
     if len(explicit_dates) >= 2:
         return explicit_dates[0], explicit_dates[1]
     elif len(explicit_dates) == 1:
@@ -197,7 +213,7 @@ def resolve_relative_dates(
     return None, None
 
 
-VENDOR_DELIMITERS = r"(?:bulan|hari|tanggal|minggu|tahun|status|sebesar|di|pada|yang|belum|sudah|lunas|semua|dibayar|terbayar|unpaid|paid|dan)"
+VENDOR_DELIMITERS = r"\b(?:bulan|hari|tanggal|minggu|tahun|status|sebesar|di|pada|yang|belum|sudah|lunas|semua|dibayar|terbayar|unpaid|paid|dan)\b"
 VENDOR_NAME_STOPWORDS = ("semua", "yang", "belum", "sudah", "lunas", "ini", "itu", "ada", "draft", "posted")
 VENDOR_PREFIXES = ("pt", "cv", "ud", "toko", "tb", "pd", "fa")
 
@@ -262,7 +278,7 @@ def _fallback_extract_vendor_invoice(
     cleaned = re.sub(r"[^\w\)]+$", "", (query or "").strip(), flags=re.UNICODE).strip()
 
     vendor_pattern = re.search(
-        rf"(?:vendor|supplier|pemasok)\s+([A-Za-z0-9\.\s]+?)(?:\s*[,?!;:/\-]+\s*{VENDOR_DELIMITERS}|\s+{VENDOR_DELIMITERS}|$)",
+        rf"(?:vendor|supplier|pemasok)\s+([A-Za-z0-9\.\s\-\&\']+?)(?:\s*[,?!;:/\-]+\s*{VENDOR_DELIMITERS}|\s+{VENDOR_DELIMITERS}|$)",
         cleaned,
         re.IGNORECASE,
     )
@@ -272,7 +288,7 @@ def _fallback_extract_vendor_invoice(
             params["vendor_name"] = v_name
     else:
         prefix_pattern = re.search(
-            rf"\b((?:PT|CV|UD|Toko)\.?\s+[A-Za-z0-9\.\s]+?)(?:\s*[,?!;:/\-]+\s*{VENDOR_DELIMITERS}|\s+{VENDOR_DELIMITERS}|$)",
+            rf"\b((?:PT|CV|UD|Toko)\.?\s+[A-Za-z0-9\.\s\-\&\']+?)(?:\s*[,?!;:/\-]+\s*{VENDOR_DELIMITERS}|\s+{VENDOR_DELIMITERS}|$)",
             cleaned,
             re.IGNORECASE,
         )
@@ -282,7 +298,7 @@ def _fallback_extract_vendor_invoice(
                 params["vendor_name"] = v_name
 
     # Document number detection (e.g. PC/2026/00002, BDG/JE/2026/00009, INV/2026/001)
-    doc_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", cleaned)
+    doc_match = re.search(r"\b((?:[A-Za-z0-9_\-]+/)+\d{4}/\d+)\b", cleaned)
     if doc_match:
         params["search"] = doc_match.group(1).upper()
         params["include_lines"] = True
@@ -303,13 +319,13 @@ def _fallback_extract_vendor_invoice(
 
 
 STOCK_STOPWORDS = (
-    "ini", "itu", "barang", "produk", "semua", "ada", "tersedia",
+    "ini", "itu", "barang", "produk", "product", "item", "sku", "kode", "semua", "ada", "tersedia",
     "stok", "stock", "sisa",
     "di", "ke", "dari", "pada", "untuk", "terkait", "tentang",
     "gudang", "lokasi", "customer", "pelanggan",
     "dan", "serta", "juga", "faktur", "tagihan", "invoice", "jurnal", "saldo",
 )
-STOCK_DELIMITERS = r"(?:dan|serta|di|ke|pada|untuk|bulan|hari|berapa|status|faktur|tagihan|invoice|saldo|jurnal|gudang|lokasi)"
+STOCK_DELIMITERS = r"\b(?:dan|serta|di|ke|pada|untuk|bulan|hari|berapa|status|faktur|tagihan|invoice|saldo|jurnal|gudang|lokasi)\b"
 
 
 def _fallback_extract_stock_level(
@@ -334,34 +350,35 @@ def _fallback_extract_stock_level(
             params["location_name"] = loc_candidate
 
     pattern = re.compile(
-        r"(?:(?:stok|stock|sisa|barang|produk)\s+)+(?:untuk\s+|terkait\s+|dari\s+|tentang\s+)?"
+        r"(?:(?:stok|stock|sisa|barang|produk|product|item)\s+)+(?:untuk\s+|terkait\s+|dari\s+|tentang\s+)?"
         r"(?!di\b|pada\b|ke\b|gudang\b|lokasi\b|faktur\b|tagihan\b|saldo\b|jurnal\b|customer\b|pelanggan\b)"
         r"([A-Za-z0-9\-\_\.\+\/\&\(\)\%\s]+?)"
-        rf"(?:\s*[\.\?\!\;\:\,]\s+|\s+{STOCK_DELIMITERS}|$)",
+        rf"(?:\s*[\.\?\!\;]\s+|\s+{STOCK_DELIMITERS}|$)",
         re.IGNORECASE,
     )
     match = pattern.search(cleaned)
     if not match:
         match = re.search(
-            rf"(?:untuk|terkait|tentang)\s+(?!di\b|pada\b|ke\b|gudang\b|lokasi\b|faktur\b|tagihan\b|saldo\b|jurnal\b|customer\b|pelanggan\b)([A-Za-z0-9\-_\.\+\/\&\(\)\%\s]+?)(?:\s*[\.\?\!\;\:\,]\s+|\s+{STOCK_DELIMITERS}|$)",
+            rf"(?:untuk|terkait|tentang)\s+(?!di\b|pada\b|ke\b|gudang\b|lokasi\b|faktur\b|tagihan\b|saldo\b|jurnal\b|customer\b|pelanggan\b)([A-Za-z0-9\-_\.\+\/\&\(\)\%\s]+?)(?:\s*[\.\?\!\;]\s+|\s+{STOCK_DELIMITERS}|$)",
             cleaned,
             re.IGNORECASE,
         )
     if match:
         token = match.group(1).strip().rstrip("?!.,; '\"")
+        token = clean_product_identifier(token)
         words = [w for w in token.split() if w.lower() not in STOCK_STOPWORDS]
         if words:
             params["code"] = token
             return params
 
-    tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{3,8})\b", cleaned)
+    tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{3,14})\b", cleaned)
     if tokens:
-        params["code"] = tokens[0]
+        params["code"] = clean_product_identifier(tokens[0])
         return params
 
     is_referential = (
         has_anaphoric_reference(cleaned)
-        or any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang", "coba lagi", "ulang", "retry"))
+        or any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang", "coba lagi", "cek lagi", "periksa lagi", "cari lagi", "ulang", "retry"))
     )
     # Check history if referential or if code is missing but history exists (follow-up slot filling)
     if (is_referential or not params.get("code")) and history:
@@ -370,13 +387,13 @@ def _fallback_extract_stock_level(
             content = getattr(prev_msg, "content", "") or ""
             is_human = isinstance(prev_msg, HumanMessage) or getattr(prev_msg, "type", "") == "human"
 
-            prev_tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{3,8})\b", content)
+            prev_tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{3,14})\b", content)
             if prev_tokens:
-                sku_m = re.search(r"\bSKU\s+([A-Z0-9\-]+|\d{3,8})\b", content, re.IGNORECASE)
+                sku_m = re.search(r"\b(?:SKU|kode)\s*[:\-]?\s*([A-Z0-9\-]+|\d{3,14})\b", content, re.IGNORECASE)
                 if sku_m:
-                    params["code"] = sku_m.group(1).rstrip(".")
+                    params["code"] = clean_product_identifier(sku_m.group(1).rstrip("."))
                 else:
-                    params["code"] = prev_tokens[0].rstrip(".")
+                    params["code"] = clean_product_identifier(prev_tokens[0].rstrip("."))
                 break
 
             if is_human:
@@ -404,7 +421,7 @@ def _fallback_extract_locations(query: str) -> Dict[str, Any]:
     params: Dict[str, Any] = {}
     cleaned = re.sub(r"[^\w\)]+$", "", (query or "").strip(), flags=re.UNICODE).strip()
     match = re.search(
-        r"(?:(?:gudang|lokasi|warehouse)\s+)+([A-Za-z0-9\_\-\s]+?)(?:\s+(?:aktif|semua|yang|ini|itu|di|pada)|$)",
+        r"(?:(?:gudang|lokasi|warehouse)\s+)+([A-Za-z0-9\_\-\s]+?)(?:\s+\b(?:aktif|semua|yang|ini|itu|di|pada)\b|$)",
         cleaned,
         re.IGNORECASE,
     )
@@ -420,7 +437,7 @@ def _fallback_extract_locations(query: str) -> Dict[str, Any]:
 
 PRODUCT_STOPWORDS = {
     "berapa", "harga", "beli", "jual", "belinya", "jualnya", "cek", "info",
-    "detail", "spesifikasi", "stok", "stoknya", "produk", "barang", "ada",
+    "detail", "spesifikasi", "stok", "stoknya", "produk", "product", "barang", "item", "sku", "kode", "ada",
     "dan", "serta", "di", "ke", "dari", "pada", "untuk", "ini", "itu",
     "nya", "semua", "daftar", "list",
 }
@@ -438,16 +455,17 @@ def _fallback_extract_product_info(
     if tokens:
         token = tokens[0]
         if not is_account_code_or_name(token) and not is_vendor_name(token):
-            params["code"] = token
+            params["code"] = clean_product_identifier(token)
             return params
 
     m = re.search(
-        r"(?:harga(?:\s+(?:beli|jual))?|detail\s+(?:produk|barang)?|info\s+(?:produk|barang)?|produk|barang|cari)\s+(?!dan\b|serta\b|di\b|ke\b|pada\b|untuk\b|faktur\b|tagihan\b|saldo\b|jurnal\b)([A-Za-z0-9\s\.\-\+\/\&\(\)\%]+?)(?:\s+(?:dan|serta|di|ke|pada|untuk|bulan|hari|berapa|status|faktur|tagihan|invoice|saldo|jurnal)|$)",
+        r"(?:harga(?:\s+(?:beli|jual))?|detail\s+(?:produk|barang|product|item)?|info\s+(?:produk|barang|product|item)?|produk|barang|product|item|cari)\s+(?!dan\b|serta\b|di\b|ke\b|pada\b|untuk\b|faktur\b|tagihan\b|saldo\b|jurnal\b)([A-Za-z0-9\s\.\-\+\/\&\(\)\%]+?)(?:\s+\b(?:dan|serta|di|ke|pada|untuk|bulan|hari|berapa|status|faktur|tagihan|invoice|saldo|jurnal)\b|$)",
         cleaned,
         re.IGNORECASE,
     )
     if m:
         term = m.group(1).strip()
+        term = clean_product_identifier(term)
         words = [w for w in term.split() if w.lower() not in PRODUCT_STOPWORDS]
         if words:
             candidate = " ".join(words)
@@ -457,7 +475,7 @@ def _fallback_extract_product_info(
 
     is_referential = (
         has_anaphoric_reference(cleaned)
-        or any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang", "coba lagi", "ulang", "retry"))
+        or any(ref in cleaned.lower() for ref in ("itu", "tersebut", "tadi", "produk", "barang", "coba lagi", "cek lagi", "periksa lagi", "cari lagi", "ulang", "retry"))
     )
     if is_referential and history:
         prior_msgs = history[:-1] if (len(history) > 1 and cleaned.lower() in getattr(history[-1], "content", "").lower()) else history
@@ -504,7 +522,7 @@ def _fallback_extract_journal_entries(
     params: Dict[str, Any] = {}
     cleaned = query.strip()
 
-    entry_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", cleaned, re.IGNORECASE)
+    entry_match = re.search(r"\b((?:[A-Za-z0-9_\-]+/)+\d{4}/\d+)\b", cleaned, re.IGNORECASE)
     if entry_match:
         params["entry_number"] = entry_match.group(1).upper()
         params["include_lines"] = True
@@ -519,7 +537,7 @@ def _fallback_extract_journal_entries(
 
     if not params.get("entry_number"):
         m_search = re.search(
-            r"(?:jurnal|transaksi|catatan)\s+([A-Za-z0-9\s]+?)(?:\s+(?:bulan|hari|tanggal|status|sebesar|di|pada)|$)",
+            r"(?:jurnal|transaksi|catatan)\s+([A-Za-z0-9\s]+?)(?:\s+\b(?:bulan|hari|tanggal|status|sebesar|di|pada)\b|$)",
             cleaned,
             re.IGNORECASE,
         )
@@ -574,7 +592,7 @@ def _fallback_extract_transfers(query: str, ref_date: Optional[date] = None) -> 
     cleaned = query.strip()
 
     # Document reference e.g. WH/IN/0001, WH/OUT/0002
-    ref_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+|WH/(?:IN|OUT)/\d+)\b", cleaned, re.IGNORECASE)
+    ref_match = re.search(r"\b((?:[A-Za-z0-9_\-]+/)+\d{4}/\d+|WH/(?:IN|OUT)/(?:\d{4}/)?\d+)\b", cleaned, re.IGNORECASE)
     if ref_match:
         params["ref"] = ref_match.group(1).upper()
 
@@ -643,7 +661,7 @@ def _fallback_extract_warehouses(query: str) -> Dict[str, Any]:
     """Deterministic heuristic extraction for warehouses inquiries."""
     params: Dict[str, Any] = {}
     cleaned = query.strip()
-    term = re.sub(r"\b(daftar|list|semua|master|info|data)\s+gudang\b", "", cleaned, flags=re.IGNORECASE).strip()
+    term = re.sub(r"\b(?:daftar|list|semua|master|info|data)(?:\s+(?:daftar|list|semua|master|info|data))*\s+(?:gudang|warehouses?)\b", "", cleaned, flags=re.IGNORECASE).strip()
     if term and term.lower() not in ("apa saja", "yang ada", "aktif", "tersedia"):
         params["search"] = term
     return params
@@ -653,7 +671,7 @@ def _fallback_extract_product_categories(query: str) -> Dict[str, Any]:
     """Deterministic heuristic extraction for product category inquiries."""
     params: Dict[str, Any] = {}
     cleaned = query.strip()
-    term = re.sub(r"\b(daftar|list|semua|master|info|data)?\s*kategori\s+(produk|barang)\b", "", cleaned, flags=re.IGNORECASE).strip()
+    term = re.sub(r"\b(?:daftar|list|semua|master|info|data)(?:\s+(?:daftar|list|semua|master|info|data))*\s*kategori(?:\s+(?:produk|barang))?\b", "", cleaned, flags=re.IGNORECASE).strip()
     if term and term.lower() not in ("apa saja", "yang ada", "aktif", "tersedia"):
         params["search"] = term
     return params
@@ -708,7 +726,7 @@ def _extract_single_tool_params(
                 f"- For 'search': Extract ONLY key entity names or document numbers (e.g. 'TikTok', 'PT Sumber Makmur', 'BCA'). Do NOT include full conversational phrases like 'aku mau tanya', 'saldo di jurnal', or relative dates.\n"
                 f"- For 'vendor_name': Extract only clean vendor / supplier company names (e.g. 'MEGACOM BEC', 'PT Sumber Makmur'). Do NOT append branch or city names into vendor_name.\n"
                 f"- For 'account_code' (in get_account_balance): Only set if user provided an actual account code (e.g. '11285', '111100'). If the user provided a name like 'bank tiktok' or 'marketplace tiktok', do NOT set 'account_code' to the name.\n"
-                f"- For 'code' (in get_stock_level & get_product_info): Extract the product SKU code, barcode, OR product name (e.g. 'AMPLOP BUBBLE 15x18 + 4CM LK', 'Kertas HVS A4', 'Tinta Epson 664', 'HVS-A4-70') into 'code'. If the user mentions a product by name, ALWAYS put that name into 'code'.\n"
+                f"- For 'code' (in get_stock_level & get_product_info): Extract the product SKU code, barcode, OR product name (e.g. 'AMPLOP BUBBLE 15x18 + 4CM LK', 'Kertas HVS A4', 'Tinta Epson 664', 'HVS-A4-70') into 'code'. If the user mentions a product by name, ALWAYS put that name into 'code'. Strip any leading filler words like 'product', 'produk', 'barang', 'item', 'sku', 'kode' (e.g. for 'product FP BROTHER...' extract 'FP BROTHER...').\n"
                 f"- For 'location_name' (in get_stock_level): Extract warehouse or location names (e.g. 'mainstore', 'gudang surabaya', 'pusat') into 'location_name'.\n"
                 f"- STRICT DATE RULE: Do NOT populate 'date_from' or 'date_to' unless the user explicitly specifies a date, relative date (e.g. 'bulan ini', 'bulan lalu', 'kemarin'), or time window. If no time expression is mentioned, leave both None.\n"
                 f"- STRICT STATUS RULE: Valid status values are only 'draft', 'posted', 'paid', 'unpaid', or 'cancel'. Never extract 'not_found' or conversational terms as status.\n"
@@ -963,7 +981,7 @@ def _extract_single_tool_params(
             extracted_dict["vendor_name"] = v_clean
 
     # Document number detection & include_lines
-    doc_m = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", sub_query) or re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+)\b", user_query)
+    doc_m = re.search(r"\b((?:[A-Za-z0-9_\-]+/)+\d{4}/\d+)\b", sub_query) or re.search(r"\b((?:[A-Za-z0-9_\-]+/)+\d{4}/\d+)\b", user_query)
     if doc_m:
         doc_code = doc_m.group(1).upper()
         if tool_name in ("fetch_vendor_invoices", "get_journal_entries"):
@@ -980,7 +998,7 @@ def _extract_single_tool_params(
     # 5. Staged Retry Relaxation (Strict Identifier Guard: do not pop document number / code)
     has_doc_identifier = bool(
         extracted_dict.get("entry_number")
-        or (extracted_dict.get("search") and re.search(r"\b[A-Za-z0-9_\-]+/\d{4}/\d+\b", str(extracted_dict.get("search"))))
+        or (extracted_dict.get("search") and re.search(r"\b(?:[A-Za-z0-9_\-]+/)+\d{4}/\d+\b", str(extracted_dict.get("search"))))
     )
     if retry_count == 1:
         extracted_dict.pop("date_from", None)
@@ -995,6 +1013,17 @@ def _extract_single_tool_params(
             elif tool_name == "get_journal_entries":
                 extracted_dict.pop("status", None)
                 extracted_dict.pop("search", None)
+
+    # Clean product codes / search terms across inventory tools
+    if "code" in extracted_dict and isinstance(extracted_dict["code"], str):
+        extracted_dict["code"] = clean_product_identifier(extracted_dict["code"])
+    if "codes" in extracted_dict and isinstance(extracted_dict["codes"], list):
+        extracted_dict["codes"] = [
+            clean_product_identifier(c) for c in extracted_dict["codes"] if c and isinstance(c, str)
+        ]
+    if "search" in extracted_dict and isinstance(extracted_dict["search"], str):
+        if tool_name in ("get_product_info", "get_stock_level", "get_stock_history"):
+            extracted_dict["search"] = clean_product_identifier(extracted_dict["search"])
 
     # 6. Schema Filtering / Validation
     try:

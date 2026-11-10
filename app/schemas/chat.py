@@ -2,8 +2,18 @@
 Chat schemas for FastPrint ERP LangGraph AI Orchestrator API.
 Provides request and response validation models for the /api/v1/chat endpoint.
 """
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class ChatMessageHistoryItem(BaseModel):
+    """
+    Representation of an individual conversation message for stateless session recovery.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    role: str = Field(..., description="Role of the sender: 'user' or 'assistant'")
+    content: str = Field(..., description="Text content of the message")
 
 
 class ChatRequest(BaseModel):
@@ -16,6 +26,10 @@ class ChatRequest(BaseModel):
     company_id: Optional[int] = Field(default=1, description="Target ERP company ID (defaults to 1)")
     user_token: Optional[str] = Field(default=None, description="Optional JWT authentication token")
     thread_id: Optional[str] = Field(default=None, description="Session thread ID for conversational memory")
+    history: Optional[List[ChatMessageHistoryItem]] = Field(
+        default=None,
+        description="Optional list of recent conversation messages for stateless memory recovery"
+    )
 
     @field_validator("query")
     @classmethod

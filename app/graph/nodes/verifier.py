@@ -282,7 +282,7 @@ def verifier_node(state: AgentState) -> Dict[str, Any]:
         extracted_params.get("entry_number")
         or (
             extracted_params.get("search")
-            and re.search(r"\b[A-Za-z0-9_\-]+/\d{4}/\d+\b", str(extracted_params["search"]))
+            and re.search(r"\b(?:[A-Za-z0-9_\-]+/)+\d{4}/\d+\b", str(extracted_params["search"]))
         )
     )
     if has_specific_document_identifier:
