@@ -746,6 +746,52 @@ def router_node(
     except Exception as exc:
         logger.warning(f"Error in rule-based classifier for query '{user_query}': {exc}")
 
+    # Step 1.5: Fast Conversational Follow-up / Slot Refinement Check
+    # Matches branch/location mentions ('di mainstore', 'di cabang bandung'),
+    # retry/check follow-ups ('coba cek lagi dimainstore'), or entity refinements
+    # when an active ERP inquiry exists in prior messages.
+    history_messages = state.get("messages") or []
+    if len(history_messages) > 1:
+        prior_q = find_previous_user_query(history_messages)
+        if prior_q:
+            from app.graph.nodes.extractor import resolve_branch_company_id
+
+            clean_uq = user_query.strip().lower()
+            is_branch_mention = bool(resolve_branch_company_id(clean_uq)) or bool(
+                re.search(r"\b(?:di\s+|cabang\s+|gudang\s+|lokasi\s+|rak\s+)([A-Za-z0-9\_\-]+)", clean_uq)
+            )
+            is_followup_retry = bool(
+                re.search(r"\b(coba\s+cek\s+lagi|cek\s+lagi|coba\s+lagi|ulang(i)?|tes\s+lagi)\b", clean_uq)
+            )
+            is_short_followup = len(clean_uq.split()) <= 7 and (is_branch_mention or is_followup_retry)
+
+            if is_short_followup:
+                try:
+                    prior_result = classify_query_rule_based(prior_q)
+                    if prior_result is not None and prior_result.get("detected_domain") in ("accounting", "inventory"):
+                        followup_tools = [
+                            {
+                                "tool": t["tool"],
+                                "domain": t["domain"],
+                                "sub_query": user_query,
+                                "params": {},
+                                "status": "pending",
+                            }
+                            for t in prior_result.get("active_tools", [])
+                        ]
+                        return {
+                            "detected_domain": prior_result.get("detected_domain"),
+                            "detected_tool": prior_result.get("detected_tool"),
+                            "query_mode": prior_result.get("query_mode", "live_erp"),
+                            "rag_query": None,
+                            "is_multi_tool": prior_result.get("is_multi_tool", False),
+                            "detected_domains": prior_result.get("detected_domains", []),
+                            "detected_tools": prior_result.get("detected_tools", []),
+                            "active_tools": followup_tools,
+                        }
+                except Exception as exc:
+                    logger.warning(f"Error resolving conversational follow-up: {exc}")
+
     # Step 2: Fallback to LLM Structured Output (Context-Aware)
     model = llm
     is_test_env = "unittest" in sys.modules or os.environ.get("FASTPRINT_TEST_ENV") == "true"
