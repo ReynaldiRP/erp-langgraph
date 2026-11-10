@@ -117,6 +117,13 @@ async def tool_node(
             "get_stock_level": erp_client.fetch_stock_level,
             "get_product_info": erp_client.fetch_product_info,
             "get_locations": erp_client.fetch_locations,
+            "get_stock_history": erp_client.fetch_stock_history,
+            "get_transfers": erp_client.fetch_transfers,
+            "get_low_stock_alerts": erp_client.fetch_low_stock_alerts,
+            "get_stock_adjustments": erp_client.fetch_stock_adjustments,
+            "get_scrap_records": erp_client.fetch_scrap_records,
+            "get_warehouses": erp_client.fetch_warehouses,
+            "get_product_categories": erp_client.fetch_product_categories,
         }
 
         active_tools = state.get("active_tools")

@@ -25,6 +25,13 @@ from app.schemas.tools import (
     ProductInfoFilterSchema,
     VendorInvoiceFilterSchema,
     LocationsFilterSchema,
+    StockHistoryFilterSchema,
+    TransfersFilterSchema,
+    LowStockAlertsFilterSchema,
+    StockAdjustmentsFilterSchema,
+    ScrapRecordsFilterSchema,
+    WarehousesFilterSchema,
+    ProductCategoriesFilterSchema,
     TOOL_DOMAIN_MAP,
 )
 from app.services.llm import get_chat_model
@@ -37,6 +44,13 @@ TOOL_SCHEMA_REGISTRY: Dict[str, Type[BaseModel]] = {
     "get_stock_level": StockLevelFilterSchema,
     "get_product_info": ProductInfoFilterSchema,
     "get_locations": LocationsFilterSchema,
+    "get_stock_history": StockHistoryFilterSchema,
+    "get_transfers": TransfersFilterSchema,
+    "get_low_stock_alerts": LowStockAlertsFilterSchema,
+    "get_stock_adjustments": StockAdjustmentsFilterSchema,
+    "get_scrap_records": ScrapRecordsFilterSchema,
+    "get_warehouses": WarehousesFilterSchema,
+    "get_product_categories": ProductCategoriesFilterSchema,
 }
 
 # Whitelist of valid accounting/journal/vendor bill statuses
@@ -519,6 +533,119 @@ def _fallback_extract_journal_entries(
     return params
 
 
+def _fallback_extract_stock_history(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for stock history inquiries."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+    tokens = re.findall(r"\b([A-Z0-9]+(?:-[A-Z0-9]+)+|\d{4,8})\b", cleaned)
+    if tokens:
+        params["code"] = tokens[0]
+    else:
+        info = _fallback_extract_product_info(cleaned)
+        if info.get("code"):
+            params["code"] = info["code"]
+        elif info.get("search"):
+            params["code"] = info["search"]
+
+    date_from, date_to = resolve_relative_dates(cleaned, ref_date)
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+def _fallback_extract_transfers(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for stock transfers/DO/receipt inquiries."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+
+    # Document reference e.g. WH/IN/0001, WH/OUT/0002
+    ref_match = re.search(r"\b([A-Za-z0-9_\-]+/\d{4}/\d+|WH/(?:IN|OUT)/\d+)\b", cleaned, re.IGNORECASE)
+    if ref_match:
+        params["ref"] = ref_match.group(1).upper()
+
+    # Source document PO / SO
+    po_so_match = re.search(r"\b(PO/\d{4}/\d+|SO/\d{4}/\d+)\b", cleaned, re.IGNORECASE)
+    if po_so_match:
+        params["source_document"] = po_so_match.group(1).upper()
+
+    # Status
+    for st in ("draft", "waiting", "in progress", "done", "canceled"):
+        if re.search(rf"\b{re.escape(st)}\b", cleaned, re.IGNORECASE):
+            params["status"] = st.title()
+            break
+
+    date_from, date_to = resolve_relative_dates(cleaned, ref_date)
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+def _fallback_extract_low_stock_alerts(query: str) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for low stock alert inquiries."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+    m_num = re.search(r"(?:threshold|ambang batas|minimum|di bawah)\s*(\d+(?:\.\d+)?)", cleaned, re.IGNORECASE)
+    if m_num:
+        try:
+            params["threshold"] = float(m_num.group(1))
+        except ValueError:
+            pass
+    return params
+
+
+def _fallback_extract_stock_adjustments(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for stock adjustments/opname inquiries."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+    for st in ("accepted", "pending", "cancelled"):
+        if re.search(rf"\b{re.escape(st)}\b", cleaned, re.IGNORECASE):
+            params["status"] = st
+            break
+
+    date_from, date_to = resolve_relative_dates(cleaned, ref_date)
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+def _fallback_extract_scrap_records(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for scrap inquiries."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+    date_from, date_to = resolve_relative_dates(cleaned, ref_date)
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+def _fallback_extract_warehouses(query: str) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for warehouses inquiries."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+    term = re.sub(r"\b(daftar|list|semua|master|info|data)\s+gudang\b", "", cleaned, flags=re.IGNORECASE).strip()
+    if term and term.lower() not in ("apa saja", "yang ada", "aktif", "tersedia"):
+        params["search"] = term
+    return params
+
+
+def _fallback_extract_product_categories(query: str) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for product category inquiries."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+    term = re.sub(r"\b(daftar|list|semua|master|info|data)?\s*kategori\s+(produk|barang)\b", "", cleaned, flags=re.IGNORECASE).strip()
+    if term and term.lower() not in ("apa saja", "yang ada", "aktif", "tersedia"):
+        params["search"] = term
+    return params
+
+
 def _extract_single_tool_params(
     plan: Dict[str, Any],
     all_plans: List[Dict[str, Any]],
@@ -632,6 +759,20 @@ def _extract_single_tool_params(
             extracted_dict = _fallback_extract_account_balance(sub_query, today)
         elif tool_name == "get_journal_entries":
             extracted_dict = _fallback_extract_journal_entries(sub_query, today)
+        elif tool_name == "get_stock_history":
+            extracted_dict = _fallback_extract_stock_history(sub_query, today)
+        elif tool_name == "get_transfers":
+            extracted_dict = _fallback_extract_transfers(sub_query, today)
+        elif tool_name == "get_low_stock_alerts":
+            extracted_dict = _fallback_extract_low_stock_alerts(sub_query)
+        elif tool_name == "get_stock_adjustments":
+            extracted_dict = _fallback_extract_stock_adjustments(sub_query, today)
+        elif tool_name == "get_scrap_records":
+            extracted_dict = _fallback_extract_scrap_records(sub_query, today)
+        elif tool_name == "get_warehouses":
+            extracted_dict = _fallback_extract_warehouses(sub_query)
+        elif tool_name == "get_product_categories":
+            extracted_dict = _fallback_extract_product_categories(sub_query)
         else:
             extracted_dict = {}
             if supports_dates and retry_count == 0:

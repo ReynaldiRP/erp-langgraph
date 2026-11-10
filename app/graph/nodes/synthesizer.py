@@ -164,7 +164,9 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
     # 3. Stock Level
     if tool == "get_stock_level":
         lines.append("### Informasi Ketersediaan Stok Barang (Inventory)\n")
-        if isinstance(tool_result, list):
+        if isinstance(tool_result, dict) and "products" in tool_result and isinstance(tool_result["products"], list):
+            items = tool_result["products"]
+        elif isinstance(tool_result, list):
             items = tool_result
         else:
             items = [tool_result]
@@ -178,6 +180,17 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
             loc = st_item.get("location_name") or (f"Location #{st_item.get('location_id')}" if st_item.get("location_id") else "Semua Lokasi")
             qty = st_item.get("qty_on_hand") or st_item.get("quantity") or 0.0
             lines.append(f"| `{code}` | {name} | {comp} | {loc} | **{qty} unit** |")
+
+        # Render breakdown if available (e.g. single product multi-location breakdown)
+        if isinstance(tool_result, dict) and tool_result.get("breakdown"):
+            lines.append("\n#### Rincian Stok per Lokasi / Rak:")
+            lines.append("| Gudang | Lokasi / Rak | Kuantitas |")
+            lines.append("|:---|:---|:---|")
+            for bd in tool_result["breakdown"]:
+                wh = bd.get("warehouse_name") or f"Gudang #{bd.get('warehouse_id', '-')}"
+                loc_n = bd.get("location_name") or f"Rak #{bd.get('location_id', '-')}"
+                b_qty = bd.get("qty", 0.0)
+                lines.append(f"| {wh} | {loc_n} | **{b_qty:g} unit** |")
         return "\n".join(lines)
 
     # 4. Product Info
@@ -190,8 +203,21 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
             for p in products:
                 lines.append(f"- **Nama Produk**: {p.get('name', '-')}")
                 lines.append(f"  - Kode / SKU: `{p.get('code') or p.get('sku', '-')}`")
-                if "price" in p or "sales_price" in p:
-                    lines.append(f"  - Harga Jual: {_format_rupiah(p.get('price') or p.get('sales_price', 0.0))}")
+                cat = p.get("category")
+                if isinstance(cat, dict):
+                    lines.append(f"  - Kategori: {cat.get('name', '-')}")
+                elif cat:
+                    lines.append(f"  - Kategori: {cat}")
+                uom = p.get("uom")
+                if isinstance(uom, dict):
+                    lines.append(f"  - Satuan (UoM): {uom.get('name', '-')}")
+                elif uom:
+                    lines.append(f"  - Satuan (UoM): {uom}")
+                if "last_unit_price" in p or "price" in p or "sales_price" in p:
+                    price_val = p.get("last_unit_price") or p.get("price") or p.get("sales_price", 0.0)
+                    lines.append(f"  - Harga Jual: {_format_rupiah(price_val)}")
+                if p.get("default_cost") is not None:
+                    lines.append(f"  - Estimasi HPP: {_format_rupiah(p.get('default_cost'))}")
         return "\n".join(lines)
 
     # 5. Locations
@@ -211,6 +237,168 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
                 ltype = (l.get("type") or "-").capitalize()
                 lcat = (l.get("category") or "-").capitalize()
                 lines.append(f"| `{lid}` | {lname} | {wh} | {ltype} | {lcat} |")
+        return "\n".join(lines)
+
+    # 6. Stock History (Kartu Stok / Buku Besar Persediaan)
+    if tool == "get_stock_history":
+        hist = tool_result.get("history") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_count = tool_result.get("total_count", len(hist)) if isinstance(tool_result, dict) else len(hist)
+        lines.append(f"### Riwayat Kartu Stok / Pergerakan Barang ({total_count} Catatan Ditemukan)\n")
+        if hist:
+            lines.append("| No | Tanggal | Referensi | Produk / SKU | Operasi | Lokasi / Rak | Mutasi Qty | Saldo Akhir |")
+            lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|")
+            for idx, h in enumerate(hist, start=1):
+                tgl = h.get("date") or "-"
+                ref = h.get("reference") or "-"
+                p_label = h.get("code") or h.get("product_name") or "-"
+                op = h.get("operation_type") or "-"
+                loc = h.get("location_name") or "-"
+                qty_done = h.get("qty_done", 0.0)
+                bal = h.get("balance")
+                bal_str = f"{bal:g}" if bal is not None else "-"
+                lines.append(f"| {idx} | {tgl} | `{ref}` | {p_label} | {op} | {loc} | **{qty_done:+g}** | {bal_str} |")
+        else:
+            lines.append("Tidak ada riwayat pergerakan stok tercatat pada periode ini.")
+        return "\n".join(lines)
+
+    # 7. Transfers (Surat Jalan / Penerimaan / Mutasi Gudang)
+    if tool == "get_transfers":
+        transfers = tool_result.get("transfers") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_count = tool_result.get("total_count", len(transfers)) if isinstance(tool_result, dict) else len(transfers)
+        lines.append(f"### Dokumen Transfer & Mutasi Persediaan ({total_count} Dokumen Ditemukan)\n")
+        if transfers:
+            lines.append("| No | No. Dokumen | Tanggal | Tipe Operasi | Dokumen Asal | Rekanan | Status |")
+            lines.append("|:---|:---|:---|:---|:---|:---|:---|")
+            for idx, t in enumerate(transfers, start=1):
+                doc_num = t.get("ref") or t.get("name") or "-"
+                tgl = t.get("date") or "-"
+                op = t.get("operation_type") or "-"
+                src = t.get("source_document") or "-"
+                contact = t.get("contact_name") or "-"
+                st = (t.get("status") or "-").upper()
+                lines.append(f"| {idx} | `{doc_num}` | {tgl} | {op} | {src} | {contact} | **{st}** |")
+
+            # If single transfer with item lines
+            if len(transfers) == 1 and transfers[0].get("lines"):
+                lines.append("\n#### Rincian Baris Barang:")
+                lines.append("| No | Kode Produk | Nama Produk | Kuantitas | Satuan |")
+                lines.append("|:---|:---|:---|:---|:---|")
+                for l_idx, line in enumerate(transfers[0]["lines"], start=1):
+                    p_code = line.get("product_code") or "-"
+                    p_name = line.get("product_name") or "-"
+                    l_qty = line.get("quantity", 0.0)
+                    uom_str = line.get("uom") or "unit"
+                    lines.append(f"| {l_idx} | `{p_code}` | {p_name} | {l_qty:g} | {uom_str} |")
+        else:
+            lines.append("Tidak ada dokumen transfer yang ditemukan.")
+        return "\n".join(lines)
+
+    # 8. Low Stock Alerts
+    if tool == "get_low_stock_alerts":
+        alerts = tool_result.get("alerts") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_found = tool_result.get("total_found", len(alerts)) if isinstance(tool_result, dict) else len(alerts)
+        lines.append(f"### Peringatan Stok Menipis / Kritis ({total_found} Produk Perlu Perhatian)\n")
+        if alerts:
+            lines.append("| No | SKU | Nama Produk | Gudang | Stok Saat Ini | Batas Minimum | Status |")
+            lines.append("|:---|:---|:---|:---|:---|:---|:---|")
+            for idx, a in enumerate(alerts, start=1):
+                code = a.get("code") or "-"
+                name = a.get("name") or "-"
+                wh = a.get("warehouse_name") or "-"
+                qty = a.get("qty_on_hand", 0.0)
+                thresh = a.get("threshold", 0.0)
+                status_label = "HABIS" if qty <= 0 else "MENIPIS"
+                lines.append(f"| {idx} | `{code}` | {name} | {wh} | **{qty:g} unit** | {thresh:g} | **{status_label}** |")
+        else:
+            lines.append("Semua stok produk terpantau dalam batas aman.")
+        return "\n".join(lines)
+
+    # 9. Stock Adjustments (Stock Opname)
+    if tool == "get_stock_adjustments":
+        adjustments = tool_result.get("adjustments") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_count = tool_result.get("total_count", len(adjustments)) if isinstance(tool_result, dict) else len(adjustments)
+        lines.append(f"### Catatan Penyesuaian Stock Opname ({total_count} Catatan Ditemukan)\n")
+        if adjustments:
+            lines.append("| No | Referensi | Produk | Lokasi / Rak | Qty Sistem | Qty Fisik | Selisih | Status |")
+            lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|")
+            for idx, adj in enumerate(adjustments, start=1):
+                ref = adj.get("reference") or "-"
+                p_name = adj.get("product_name") or "-"
+                loc = adj.get("location_name") or "-"
+                theo = adj.get("theoretical_qty", 0.0)
+                real = adj.get("real_qty", 0.0)
+                diff = adj.get("difference", 0.0)
+                st = (adj.get("status") or "-").upper()
+                lines.append(f"| {idx} | `{ref}` | {p_name} | {loc} | {theo:g} | {real:g} | **{diff:+g}** | {st} |")
+        else:
+            lines.append("Tidak ada catatan penyesuaian stock opname pada filter ini.")
+        return "\n".join(lines)
+
+    # 10. Scrap Records
+    if tool == "get_scrap_records":
+        scraps = tool_result.get("scraps") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_count = tool_result.get("total_count", len(scraps)) if isinstance(tool_result, dict) else len(scraps)
+        lines.append(f"### Catatan Barang Rusak / Scrap Order ({total_count} Catatan Ditemukan)\n")
+        if scraps:
+            lines.append("| No | Referensi | Produk | Lokasi Asal | Kuantitas Cacat | Alasan / Keterangan | Tanggal |")
+            lines.append("|:---|:---|:---|:---|:---|:---|:---|")
+            for idx, sc in enumerate(scraps, start=1):
+                ref = sc.get("reference") or "-"
+                p_name = sc.get("product_name") or "-"
+                loc = sc.get("source_location_name") or "-"
+                qty = sc.get("quantity", 0.0)
+                reason = sc.get("reason") or "-"
+                tgl = sc.get("date") or "-"
+                lines.append(f"| {idx} | `{ref}` | {p_name} | {loc} | **{qty:g} unit** | {reason} | {tgl} |")
+        else:
+            lines.append("Tidak ada catatan barang rusak / scrap pada filter ini.")
+        return "\n".join(lines)
+
+    # 11. Warehouses
+    if tool == "get_warehouses":
+        whs = tool_result.get("warehouses") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_found = tool_result.get("total_found", len(whs)) if isinstance(tool_result, dict) else len(whs)
+        lines.append(f"### Daftar Master Gudang Perusahaan ({total_found} Gudang Ditemukan)\n")
+        if whs:
+            lines.append("| ID | Nama Gudang | Kode Referensi | Perusahaan | Lokasi Internal Terkait |")
+            lines.append("|:---|:---|:---|:---|:---|")
+            for w in whs:
+                wid = w.get("id", "-")
+                wname = w.get("name", "-")
+                code = w.get("code") or "-"
+                comp = f"Company #{w.get('company_id', 1)}"
+                locs_count = len(w.get("locations") or [])
+                lines.append(f"| `{wid}` | {wname} | `{code}` | {comp} | {locs_count} lokasi |")
+        return "\n".join(lines)
+
+    # 12. Product Categories
+    if tool == "get_product_categories":
+        cats = tool_result.get("categories") if isinstance(tool_result, dict) else (
+            tool_result if isinstance(tool_result, list) else [tool_result]
+        )
+        total_found = tool_result.get("total_found", len(cats)) if isinstance(tool_result, dict) else len(cats)
+        lines.append(f"### Daftar Master Kategori Produk ({total_found} Kategori Ditemukan)\n")
+        if cats:
+            lines.append("| ID | Nama Kategori | Metode Costing | UoM Standar |")
+            lines.append("|:---|:---|:---|:---|")
+            for c in cats:
+                cid = c.get("id", "-")
+                cname = c.get("name", "-")
+                cm = c.get("costing_method") or "-"
+                uom_n = c.get("standard_uom") or "-"
+                lines.append(f"| `{cid}` | {cname} | {cm} | {uom_n} |")
         return "\n".join(lines)
 
     # Default fallback

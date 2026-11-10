@@ -50,7 +50,10 @@ def _calculate_records_count(tool_result: Any) -> int:
             return int(tool_result["count"])
 
         # Check common collection list keys
-        for list_key in ("entries", "accounts", "products", "items", "records", "lines", "locations"):
+        for list_key in (
+            "entries", "accounts", "products", "items", "records", "lines", "locations",
+            "transfers", "history", "adjustments", "scraps", "warehouses", "categories", "alerts",
+        ):
             val = tool_result.get(list_key)
             if isinstance(val, list):
                 return len(val)
