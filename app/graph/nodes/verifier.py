@@ -52,11 +52,17 @@ def _calculate_records_count(tool_result: Any) -> int:
         # Check common collection list keys
         for list_key in (
             "entries", "accounts", "products", "items", "records", "lines", "locations",
-            "transfers", "history", "adjustments", "scraps", "warehouses", "categories", "alerts",
+            "transfers", "history", "adjustments", "scraps", "warehouses", "categories", "alerts", "bills",
         ):
             val = tool_result.get(list_key)
             if isinstance(val, list):
                 return len(val)
+
+        # Check financial report summary or totals blocks (e.g. P&L, Balance Sheet, Bank Recon, Account Totals)
+        if isinstance(tool_result.get("summary"), dict) and tool_result["summary"]:
+            return 1
+        if isinstance(tool_result.get("totals"), dict) and tool_result["totals"]:
+            return 1
 
         # Nested data field inspection (if envelope wasn't stripped)
         if "data" in tool_result and isinstance(tool_result["data"], (dict, list)):
@@ -65,10 +71,10 @@ def _calculate_records_count(tool_result: Any) -> int:
         # Specific check for aggregate balance payloads without account records
         balance_metric_keys = {
             "net_balance", "total_debit", "total_credit",
-            "grand_net_balance", "grand_total_debit", "grand_total_credit"
+            "grand_net_balance", "grand_total_debit", "grand_total_credit",
+            "total_revenue", "total_assets", "bank_statement_balance",
         }
-        if all(k in balance_metric_keys for k in tool_result.keys()):
-            # All keys are aggregate financial sums; check if any non-zero value exists
+        if any(k in balance_metric_keys for k in tool_result.keys()):
             has_value = any(float(v or 0) != 0.0 for v in tool_result.values() if isinstance(v, (int, float)))
             return 1 if has_value else 0
 
@@ -113,6 +119,24 @@ def _calculate_records_count(tool_result: Any) -> int:
             "debit",
             "credit",
             "balance",
+            "total_revenue",
+            "gross_profit",
+            "net_profit",
+            "cogs",
+            "operating_profit",
+            "gross_margin_percent",
+            "total_assets",
+            "total_liabilities",
+            "total_equity",
+            "total_liabilities_and_equity",
+            "bank_statement_balance",
+            "erp_book_balance",
+            "residual_balance",
+            "bill_date",
+            "due_date",
+            "due_status",
+            "closing_balance",
+            "running_balance",
         }
         has_business_attr = any(k in KNOWN_RECORD_ATTRS for k in tool_result.keys())
         has_non_none_value = any(v is not None for v in tool_result.values())

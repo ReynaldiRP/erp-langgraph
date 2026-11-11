@@ -32,6 +32,11 @@ async def _execute_single_tool(
     clean_params = dict(params or {})
     target_company_id = clean_params.get("company_id") or default_company_id
 
+    # Adapt parameters for balance sheet cut-off date
+    if tool_name == "get_balance_sheet":
+        if "date_to" in clean_params and not clean_params.get("as_of_date"):
+            clean_params["as_of_date"] = clean_params["date_to"]
+
     # Adapt parameters for vendor invoices/journal entries
     if tool_name in ("fetch_vendor_invoices", "get_journal_entries"):
         if "vendor_name" in clean_params:
@@ -144,6 +149,11 @@ async def tool_node(
             "fetch_vendor_invoices": erp_client.fetch_vendor_invoices,
             "get_journal_entries": erp_client.fetch_journal_entries,
             "get_account_balance": erp_client.fetch_account_balance,
+            "get_general_ledger": erp_client.fetch_general_ledger,
+            "get_profit_and_loss": erp_client.fetch_profit_and_loss,
+            "get_balance_sheet": erp_client.fetch_balance_sheet,
+            "get_vendor_bills": erp_client.fetch_vendor_bills,
+            "get_bank_reconciliation_summary": erp_client.fetch_bank_reconciliation_summary,
             "get_stock_level": erp_client.fetch_stock_level,
             "get_product_info": erp_client.fetch_product_info,
             "get_locations": erp_client.fetch_locations,

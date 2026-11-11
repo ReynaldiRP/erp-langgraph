@@ -28,6 +28,11 @@ class PlannedToolCall(BaseModel):
         "fetch_vendor_invoices",
         "get_account_balance",
         "get_journal_entries",
+        "get_general_ledger",
+        "get_profit_and_loss",
+        "get_balance_sheet",
+        "get_vendor_bills",
+        "get_bank_reconciliation_summary",
         "get_stock_level",
         "get_product_info",
         "get_locations",
@@ -71,6 +76,11 @@ class RouterDecision(BaseModel):
         "fetch_vendor_invoices",
         "get_account_balance",
         "get_journal_entries",
+        "get_general_ledger",
+        "get_profit_and_loss",
+        "get_balance_sheet",
+        "get_vendor_bills",
+        "get_bank_reconciliation_summary",
         "get_stock_level",
         "get_product_info",
         "get_locations",
@@ -116,6 +126,11 @@ class MultiRouterDecision(BaseModel):
         "fetch_vendor_invoices",
         "get_account_balance",
         "get_journal_entries",
+        "get_general_ledger",
+        "get_profit_and_loss",
+        "get_balance_sheet",
+        "get_vendor_bills",
+        "get_bank_reconciliation_summary",
         "get_stock_level",
         "get_product_info",
         "get_locations",
@@ -180,12 +195,31 @@ CUSTOMER_BILLING_TERMS = (
     "bayar",
 )
 
+ACCOUNTING_PROFIT_LOSS_PATTERNS = [
+    r"\b(laba\s*(?:dan\s*)?rugi|rugi\s*laba|p&l|profit\s*(?:and|&)\s*loss|income\s*statement|omzet|omset|gross\s*margin|laba\s*kotor|laba\s*bersih)\b",
+]
+
+ACCOUNTING_BALANCE_SHEET_PATTERNS = [
+    r"\b(neraca(?:\s*keuangan)?|balance\s*sheet|posisi\s*keuangan|total\s*aset|aktiva\s*(?:dan\s*)?pasiva|keseimbangan\s*neraca)\b",
+]
+
+ACCOUNTING_GENERAL_LEDGER_PATTERNS = [
+    r"\b(buku\s*besar|general\s*ledger|ledger\s*akun|kartu\s*buku\s*besar|running\s*balance|mutasi\s*rekening)\b",
+]
+
+ACCOUNTING_BANK_RECON_PATTERNS = [
+    r"\b(rekonsiliasi\s*bank|bank\s*reconciliation|rekon\s*bank|selisih\s*(?:rekening\s*koran|bank)|statement\s*balance)\b",
+]
+
+ACCOUNTING_VENDOR_BILLS_PATTERNS = [
+    r"\b(vendor\s*bills?|ap\s*aging|umur\s*hutang|jatuh\s*tempo|overdue|due\s*soon)\b",
+]
+
 ACCOUNTING_BALANCE_PATTERNS = [
     r"\bsaldo(nya)?\b",
     r"\bbalance\b",
     r"\bkas\b",
     r"\bkas kecil\b",
-    r"\bneraca\b",
     r"\bbuku kas\b",
     r"\bsaldo akun\b",
 ]
@@ -193,8 +227,6 @@ ACCOUNTING_BALANCE_PATTERNS = [
 ACCOUNTING_JOURNAL_PATTERNS = [
     r"\bjurnal(nya)?\b",
     r"\bjournal\b",
-    r"\bbuku besar\b",
-    r"\bledger\b",
     r"\bentri jurnal\b",
     r"\bdebit kredit\b",
 ]
@@ -414,6 +446,11 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
         has_erp_intent = (
             _match_any(ACCOUNTING_BALANCE_PATTERNS, cleaned)
             or _match_any(ACCOUNTING_JOURNAL_PATTERNS, cleaned)
+            or _match_any(ACCOUNTING_PROFIT_LOSS_PATTERNS, cleaned)
+            or _match_any(ACCOUNTING_BALANCE_SHEET_PATTERNS, cleaned)
+            or _match_any(ACCOUNTING_GENERAL_LEDGER_PATTERNS, cleaned)
+            or _match_any(ACCOUNTING_BANK_RECON_PATTERNS, cleaned)
+            or _match_any(ACCOUNTING_VENDOR_BILLS_PATTERNS, cleaned)
             or _match_any(INVENTORY_STOCK_PATTERNS, cleaned)
             or _match_any(INVENTORY_LOCATION_PATTERNS, cleaned)
             or _match_any(INVENTORY_PRODUCT_PATTERNS, cleaned)
@@ -449,7 +486,32 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
     # 0.2 Multi-Intent Accumulation across Accounting & Inventory
     candidates: List[Tuple[str, str, int]] = []
 
-    # Accounting: Vendor invoices
+    # Accounting: Profit & Loss (Laba Rugi)
+    m_pl = _find_first_match(ACCOUNTING_PROFIT_LOSS_PATTERNS, cleaned)
+    if m_pl:
+        candidates.append(("get_profit_and_loss", "accounting", m_pl.start()))
+
+    # Accounting: Balance Sheet (Neraca Keuangan)
+    m_bs = _find_first_match(ACCOUNTING_BALANCE_SHEET_PATTERNS, cleaned)
+    if m_bs:
+        candidates.append(("get_balance_sheet", "accounting", m_bs.start()))
+
+    # Accounting: Bank Reconciliation Summary
+    m_recon = _find_first_match(ACCOUNTING_BANK_RECON_PATTERNS, cleaned)
+    if m_recon:
+        candidates.append(("get_bank_reconciliation_summary", "accounting", m_recon.start()))
+
+    # Accounting: General Ledger (Buku Besar)
+    m_gl = _find_first_match(ACCOUNTING_GENERAL_LEDGER_PATTERNS, cleaned)
+    if m_gl:
+        candidates.append(("get_general_ledger", "accounting", m_gl.start()))
+
+    # Accounting: Vendor bills & AP Aging
+    m_bills = _find_first_match(ACCOUNTING_VENDOR_BILLS_PATTERNS, cleaned)
+    if m_bills:
+        candidates.append(("get_vendor_bills", "accounting", m_bills.start()))
+
+    # Accounting: Vendor invoices (legacy alias or general vendor invoice keywords)
     if (has_vendor and any(kw in cleaned for kw in ("tagihan", "faktur", "invoice", "bill", "hutang"))) or has_purchase_invoice:
         vendor_invoice_kws = (
             "tagihan", "faktur", "invoice", "bill", "hutang",
@@ -457,16 +519,16 @@ def classify_query_rule_based(query: str) -> Optional[Dict[str, Any]]:
             "faktur pembelian", "tagihan pembelian", "invoice pembelian",
         )
         matches = [cleaned.find(kw) for kw in vendor_invoice_kws if kw in cleaned]
-        if matches:
+        if matches and not m_bills:
             candidates.append(("fetch_vendor_invoices", "accounting", min(matches)))
-    elif has_vendor and not is_rag:
+    elif has_vendor and not is_rag and not m_bills:
         matches = [cleaned.find(kw) for kw in ("vendor", "supplier", "pemasok", "hutang") if kw in cleaned]
         if matches:
             candidates.append(("fetch_vendor_invoices", "accounting", min(matches)))
 
     # Accounting: Specific document number reference (e.g. PC/2026/00002, BDG/JE/2026/00009, JE/2026/001)
     doc_match = re.search(r"\b((?:[A-Za-z0-9_\-]+/)+\d{4}/\d+)\b", cleaned)
-    if doc_match and not any(c[0] in ("fetch_vendor_invoices", "get_journal_entries") for c in candidates):
+    if doc_match and not any(c[0] in ("fetch_vendor_invoices", "get_vendor_bills", "get_journal_entries") for c in candidates):
         doc_code = doc_match.group(1).upper()
         if "JE" in doc_code:
             candidates.append(("get_journal_entries", "accounting", doc_match.start()))
@@ -866,6 +928,14 @@ def router_node(
                 "CONTEXT AWARENESS:\n"
                 "Evaluate user query in context of conversational history.\n"
                 "If user asks to retry or follow up, infer intended domain and target ERP tools from history.\n\n"
+                "ACCOUNTING TOOLS GUIDE:\n"
+                "- 'get_profit_and_loss': Profit & loss, income statement, laba rugi, omzet vs HPP, gross margin, net profit.\n"
+                "- 'get_balance_sheet': Balance sheet, neraca keuangan, total assets, liabilities, equity, balance equation.\n"
+                "- 'get_general_ledger': General ledger, buku besar akun, mutasi kronologis, running balance per akun.\n"
+                "- 'get_bank_reconciliation_summary': Bank reconciliation, selisih rekening koran vs buku bank ERP.\n"
+                "- 'get_vendor_bills': Vendor bills, faktur pembelian, hutang vendor, tagihan jatuh tempo, AP aging.\n"
+                "- 'get_account_balance': Chart of accounts balances, saldo kas/bank/akun periode tertentu.\n"
+                "- 'get_journal_entries': General journal vouchers/entries, memorial entries.\n\n"
                 "CRITICAL GUARDRAILS:\n"
                 "- References to specific ERP transaction document numbers (e.g., 'PC/...', 'JE/...', 'INV/...') must be routed to domain='accounting' (fetch_vendor_invoices or get_journal_entries).\n"
                 "- Customer / pelanggan inquiries targeting invoices, billing, or accounts receivable must NOT be routed to 'fetch_vendor_invoices'. Set domain='general', tool=null, planned_tools=[].\n"

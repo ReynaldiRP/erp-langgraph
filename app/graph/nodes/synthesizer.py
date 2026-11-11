@@ -140,25 +140,218 @@ def _format_single_tool_presentation(tool: Optional[str], tool_result: Any) -> s
     # 2. Account Balance
     if tool == "get_account_balance":
         accounts = tool_result.get("accounts") or []
+        totals = tool_result.get("totals") or {}
         lines.append("### Informasi Saldo Chart of Account (Accounting Balance)\n")
+        if totals:
+            op = _format_rupiah(totals.get("opening_balance", 0.0))
+            deb = _format_rupiah(totals.get("period_debit", 0.0))
+            kred = _format_rupiah(totals.get("period_credit", 0.0))
+            end = _format_rupiah(totals.get("ending_balance", 0.0))
+            lines.append("#### Ringkasan Saldo Periode:")
+            lines.append(f"- **Saldo Awal**: {op}")
+            lines.append(f"- **Mutasi Debit**: {deb}")
+            lines.append(f"- **Mutasi Kredit**: {kred}")
+            lines.append(f"- **Saldo Akhir**: **{end}**\n")
+
         if accounts:
-            lines.append("| Kode Akun | Nama Akun | Total Debit | Total Kredit | Saldo Bersih | Posisi |")
+            lines.append("| Kode Akun | Nama Akun | Saldo Awal | Mutasi Debit | Mutasi Kredit | Saldo Akhir |")
             lines.append("|:---|:---|:---|:---|:---|:---|")
             for acc in accounts:
                 code = acc.get("account_code") or "-"
                 name = acc.get("account_name") or "-"
-                deb = _format_rupiah(acc.get("total_debit", 0.0))
-                kred = _format_rupiah(acc.get("total_credit", 0.0))
-                net = _format_rupiah(acc.get("net_balance", 0.0))
-                pos = acc.get("balance_position") or "DEBIT"
-                lines.append(f"| `{code}` | {name} | {deb} | {kred} | **{net}** | {pos} |")
-        else:
+                op = _format_rupiah(acc.get("opening_balance", 0.0)) if acc.get("opening_balance") is not None else "-"
+                deb = _format_rupiah(acc.get("period_debit", acc.get("total_debit", 0.0)))
+                kred = _format_rupiah(acc.get("period_credit", acc.get("total_credit", 0.0)))
+                net = _format_rupiah(acc.get("ending_balance", acc.get("net_balance", 0.0)))
+                lines.append(f"| `{code}` | {name} | {op} | {deb} | {kred} | **{net}** |")
+        elif not totals:
             net = _format_rupiah(tool_result.get("net_balance", 0.0))
             deb = _format_rupiah(tool_result.get("total_debit", 0.0))
             kred = _format_rupiah(tool_result.get("total_credit", 0.0))
             lines.append(f"- **Total Debit**: {deb}")
             lines.append(f"- **Total Kredit**: {kred}")
             lines.append(f"- **Saldo Bersih**: **{net}**")
+        return "\n".join(lines)
+
+    # 2.1 General Ledger (Buku Besar)
+    if tool == "get_general_ledger":
+        accounts = tool_result.get("accounts") or []
+        d_from = tool_result.get("date_from") or "-"
+        d_to = tool_result.get("date_to") or "-"
+        lines.append(f"### Buku Besar Akun (General Ledger) — Periode: {d_from} s/d {d_to}\n")
+        if not accounts:
+            lines.append("Tidak ada transaksi buku besar yang tercatat pada filter ini.")
+            return "\n".join(lines)
+
+        for acc in accounts:
+            acc_c = acc.get("account_code") or "-"
+            acc_n = acc.get("account_name") or "-"
+            op_bal = _format_rupiah(acc.get("opening_balance", 0.0))
+            cl_bal = _format_rupiah(acc.get("closing_balance", 0.0))
+            p_deb = _format_rupiah(acc.get("period_debit", 0.0))
+            p_kred = _format_rupiah(acc.get("period_credit", 0.0))
+
+            lines.append(f"#### Akun: `{acc_c}` — {acc_n}")
+            lines.append(f"- Saldo Awal: **{op_bal}** | Mutasi Debit: {p_deb} | Mutasi Kredit: {p_kred} | Saldo Akhir: **{cl_bal}**\n")
+
+            items = acc.get("items") or []
+            if items:
+                lines.append("| Tanggal | No. Entri | Referensi | Rekanan | Keterangan | Debit | Kredit | Saldo Berjalan |")
+                lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|")
+                for it in items:
+                    tgl = it.get("date") or "-"
+                    num = it.get("entry_number") or "-"
+                    ref = it.get("ref") or "-"
+                    partner = it.get("partner_name") or "-"
+                    desc = it.get("description") or "-"
+                    deb = _format_rupiah(it.get("debit", 0.0))
+                    kred = _format_rupiah(it.get("credit", 0.0))
+                    run_bal = _format_rupiah(it.get("running_balance", 0.0))
+                    lines.append(f"| {tgl} | `{num}` | {ref} | {partner} | {desc} | {deb} | {kred} | **{run_bal}** |")
+            else:
+                lines.append("*(Tidak ada mutasi transaksi pada periode ini)*")
+            lines.append("")
+        return "\n".join(lines)
+
+    # 2.2 Profit & Loss (Laba Rugi)
+    if tool == "get_profit_and_loss":
+        summary = tool_result.get("summary") or {}
+        d_from = tool_result.get("date_from") or "-"
+        d_to = tool_result.get("date_to") or "-"
+        lines.append(f"### Laporan Laba Rugi (Profit & Loss) — Periode: {d_from} s/d {d_to}\n")
+        lines.append("| Metrik Keuangan | Nilai Nominal |")
+        lines.append("|:---|:---|")
+        lines.append(f"| **Pendapatan Usaha (Revenue)** | {_format_rupiah(summary.get('total_revenue', 0.0))} |")
+        lines.append(f"| Beban Pokok Penjualan (HPP / COGS) | {_format_rupiah(summary.get('cogs', 0.0))} |")
+        lines.append(f"| **Laba Kotor (Gross Profit)** | **{_format_rupiah(summary.get('gross_profit', 0.0))}** |")
+        gm_pct = summary.get("gross_margin_percent", 0.0)
+        lines.append(f"| *Gross Profit Margin* | *{gm_pct:.1f}%* |")
+        lines.append(f"| Beban Operasional | {_format_rupiah(summary.get('operating_expenses', 0.0))} |")
+        lines.append(f"| Laba Operasional | {_format_rupiah(summary.get('operating_profit', 0.0))} |")
+        lines.append(f"| Pendapatan / Beban Lain-Lain Bersih | {_format_rupiah(summary.get('other_net', 0.0))} |")
+        lines.append(f"| **Laba Bersih Periode Berjalan (Net Profit)** | **{_format_rupiah(summary.get('net_profit', 0.0))}** |")
+
+        breakdown = tool_result.get("breakdown") or []
+        if breakdown:
+            lines.append("\n#### Rincian Hierarki Laba Rugi:")
+            lines.append("| Grup Akun | Tipe / Sub-Tipe | Kode Akun | Nama Akun | Saldo |")
+            lines.append("|:---|:---|:---|:---|:---|")
+            for grp in breakdown:
+                grp_name = grp.get("group_name") or grp.get("name") or "-"
+                for tp in grp.get("types", []):
+                    tp_name = tp.get("type_name") or tp.get("name") or "-"
+                    for acc in tp.get("accounts", []):
+                        acc_c = acc.get("account_code") or "-"
+                        acc_n = acc.get("account_name") or "-"
+                        bal = _format_rupiah(acc.get("balance", 0.0))
+                        lines.append(f"| {grp_name} | {tp_name} | `{acc_c}` | {acc_n} | {bal} |")
+        return "\n".join(lines)
+
+    # 2.3 Balance Sheet (Neraca Keuangan)
+    if tool == "get_balance_sheet":
+        summary = tool_result.get("summary") or {}
+        as_of = tool_result.get("as_of_date") or "-"
+        lines.append(f"### Laporan Neraca Keuangan (Balance Sheet) — Posisi per: {as_of}\n")
+        lines.append("| Posisi Keuangan | Nilai Nominal |")
+        lines.append("|:---|:---|")
+        lines.append(f"| **Total Aset (Assets)** | **{_format_rupiah(summary.get('total_assets', 0.0))}** |")
+        lines.append(f"| Total Kewajiban (Liabilities) | {_format_rupiah(summary.get('total_liabilities', 0.0))} |")
+        lines.append(f"| Total Ekuitas (Equity) | {_format_rupiah(summary.get('total_equity', 0.0))} |")
+        lines.append(f"| **Total Kewajiban & Ekuitas** | **{_format_rupiah(summary.get('total_liabilities_and_equity', 0.0))}** |")
+
+        check = summary.get("net_balance_check") or {}
+        is_bal = check.get("is_balanced", True)
+        diff = check.get("difference", 0.0)
+        lines.append("\n#### Status Keseimbangan Neraca (Assets = Liabilities + Equity):")
+        if is_bal and abs(diff) < 0.01:
+            lines.append("- **Status**: ✅ **SEIMBANG (BALANCED)** (Selisih: Rp 0,00)")
+        else:
+            lines.append(f"- **Status**: ⚠️ **TIDAK SEIMBANG** (Selisih: {_format_rupiah(diff)})")
+
+        breakdown = tool_result.get("breakdown") or []
+        if breakdown:
+            lines.append("\n#### Rincian Akun Neraca:")
+            lines.append("| Kategori | Tipe Aset/Kewajiban | Kode Akun | Nama Akun | Saldo |")
+            lines.append("|:---|:---|:---|:---|:---|")
+            for grp in breakdown:
+                grp_name = grp.get("group_name") or grp.get("name") or "-"
+                for tp in grp.get("types", []):
+                    tp_name = tp.get("type_name") or tp.get("name") or "-"
+                    for acc in tp.get("accounts", []):
+                        acc_c = acc.get("account_code") or "-"
+                        acc_n = acc.get("account_name") or "-"
+                        bal = _format_rupiah(acc.get("balance", 0.0))
+                        lines.append(f"| {grp_name} | {tp_name} | `{acc_c}` | {acc_n} | {bal} |")
+        return "\n".join(lines)
+
+    # 2.4 Vendor Bills (Tagihan Vendor & AP Aging)
+    if tool == "get_vendor_bills":
+        bills = tool_result.get("bills") or []
+        total_count = tool_result.get("total_count", len(bills))
+        lines.append(f"### Daftar Tagihan Faktur Vendor (Vendor Bills) — ({total_count} Tagihan Ditemukan)\n")
+        if bills:
+            lines.append("| No | No. Faktur | Tanggal | Jatuh Tempo | Vendor / Rekanan | Total Nilai | Terbayar | Sisa Hutang | Status Bayar | Tempo |")
+            lines.append("|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|")
+            total_amount_sum = 0.0
+            total_residual_sum = 0.0
+            overdue_count = 0
+            for idx, b in enumerate(bills, start=1):
+                num = b.get("number") or "-"
+                b_date = b.get("bill_date") or "-"
+                due_d = b.get("due_date") or "-"
+                v_name = b.get("vendor_name") or "-"
+                amt = float(b.get("total_amount", 0.0) or 0.0)
+                paid = float(b.get("paid_amount", 0.0) or 0.0)
+                res = float(b.get("residual_balance", 0.0) or 0.0)
+                p_st = (b.get("payment_status") or "-").upper()
+                d_st = (b.get("due_status") or "all").upper()
+                if b.get("due_status") == "overdue":
+                    overdue_count += 1
+                total_amount_sum += amt
+                total_residual_sum += res
+                lines.append(f"| {idx} | `{num}` | {b_date} | {due_d} | {v_name} | {_format_rupiah(amt)} | {_format_rupiah(paid)} | **{_format_rupiah(res)}** | {p_st} | {d_st} |")
+
+            lines.append("\n#### Ringkasan Hutang Dagang (AP):")
+            lines.append(f"- **Total Tagihan Faktur**: {_format_rupiah(total_amount_sum)}")
+            lines.append(f"- **Total Sisa Hutang Belum Lunas**: **{_format_rupiah(total_residual_sum)}**")
+            if overdue_count > 0:
+                lines.append(f"- ⚠️ **Tagihan Lewat Jatuh Tempo (Overdue)**: **{overdue_count} faktur**")
+        else:
+            lines.append("Tidak ada tagihan faktur vendor pada kriteria ini.")
+        return "\n".join(lines)
+
+    # 2.5 Bank Reconciliation Summary
+    if tool == "get_bank_reconciliation_summary":
+        summary = tool_result.get("summary") or {}
+        j_name = tool_result.get("journal_name") or "Bank Utama"
+        acc_c = tool_result.get("bank_account_code") or "-"
+        acc_n = tool_result.get("bank_account_name") or "-"
+        d_from = tool_result.get("date_from") or "-"
+        d_to = tool_result.get("date_to") or "-"
+
+        lines.append(f"### Ringkasan Rekonsiliasi Bank — {j_name}\n")
+        lines.append(f"- **Buku Jurnal**: {j_name} (`{acc_c}` — {acc_n})")
+        lines.append(f"- **Periode**: {d_from} s/d {d_to}\n")
+
+        stmt_bal = summary.get("bank_statement_balance", 0.0)
+        book_bal = summary.get("erp_book_balance", 0.0)
+        diff = summary.get("difference", 0.0)
+        unrec_stmt = summary.get("unreconciled_statement_lines_count", 0)
+        unrec_gl = summary.get("unreconciled_gl_lines_count", 0)
+
+        lines.append("| Indikator Rekonsiliasi | Nilai Saldo |")
+        lines.append("|:---|:---|")
+        lines.append(f"| Saldo Rekening Koran Bank | {_format_rupiah(stmt_bal)} |")
+        lines.append(f"| Saldo Buku Besar ERP (GL Book) | {_format_rupiah(book_bal)} |")
+        lines.append(f"| **Selisih Rekonsiliasi (Difference)** | **{_format_rupiah(diff)}** |")
+
+        lines.append("\n#### Status Transaksi Belum Terekonsiliasi:")
+        lines.append(f"- Transaksi Rekening Koran Belum Cocok: **{unrec_stmt} baris**")
+        lines.append(f"- Transaksi Jurnal ERP Belum Cocok: **{unrec_gl} baris**")
+        if abs(diff) < 0.01 and unrec_stmt == 0 and unrec_gl == 0:
+            lines.append("- **Status**: ✅ **Terekonsiliasi Sempurna (Fully Reconciled)**")
+        else:
+            lines.append("- **Status**: ⚠️ **Memerlukan Tindak Lanjut Pencocokan Transaksi**")
         return "\n".join(lines)
 
     # 3. Stock Level
@@ -690,7 +883,8 @@ def synthesizer_node(
             prompt = (
                 "Anda adalah Asisten AI FastPrint ERP yang profesional dan teliti.\n"
                 "Sajikan data laporan berikut dalam Bahasa Indonesia yang formal, ringkas, dan jelas.\n"
-                "Pertahankan seluruh angka transaksi, kode, dan rincian tabel Markdown dengan akurat tanpa mengubah nilai.\n\n"
+                "Pertahankan seluruh angka transaksi, kode, dan rincian tabel Markdown dengan akurat tanpa mengubah nilai.\n"
+                "DILARANG KERAS menghitung ulang atau mengestimasi angka nominal keuangan (omzet, HPP, laba kotor, laba bersih, selisih rekonsiliasi, saldo neraca). Seluruh angka wajib dikutip persis dari data laporan terstruktur.\n\n"
                 f"Pertanyaan Pengguna: {user_query}\n"
                 f"Data Laporan Terstruktur:\n{deterministic_answer}"
             )

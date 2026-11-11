@@ -15,6 +15,11 @@ from app.core.config import settings
 from app.schemas.tools import (
     AccountBalanceFilterSchema,
     JournalEntriesFilterSchema,
+    GeneralLedgerFilterSchema,
+    ProfitAndLossFilterSchema,
+    BalanceSheetFilterSchema,
+    VendorBillsFilterSchema,
+    BankReconciliationFilterSchema,
     StockLevelFilterSchema,
     ProductInfoFilterSchema,
     LocationsFilterSchema,
@@ -403,6 +408,81 @@ class DjangoCoreClient:
         return await self.execute_tool(
             domain="accounting",
             tool_name="get_journal_entries",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_general_ledger(
+        self,
+        params: Union[GeneralLedgerFilterSchema, Dict[str, Any]],
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call accounting.get_general_ledger tool."""
+        return await self.execute_tool(
+            domain="accounting",
+            tool_name="get_general_ledger",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_profit_and_loss(
+        self,
+        params: Union[ProfitAndLossFilterSchema, Dict[str, Any]],
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call accounting.get_profit_and_loss tool."""
+        return await self.execute_tool(
+            domain="accounting",
+            tool_name="get_profit_and_loss",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_balance_sheet(
+        self,
+        params: Union[BalanceSheetFilterSchema, Dict[str, Any]],
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call accounting.get_balance_sheet tool."""
+        return await self.execute_tool(
+            domain="accounting",
+            tool_name="get_balance_sheet",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_vendor_bills(
+        self,
+        params: Union[VendorBillsFilterSchema, Dict[str, Any]],
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call accounting.get_vendor_bills tool."""
+        return await self.execute_tool(
+            domain="accounting",
+            tool_name="get_vendor_bills",
+            params=_clean_params(params),
+            company_id=company_id,
+            user_token=user_token,
+        )
+
+    async def fetch_bank_reconciliation_summary(
+        self,
+        params: Union[BankReconciliationFilterSchema, Dict[str, Any]],
+        user_token: Optional[str] = None,
+        company_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Call accounting.get_bank_reconciliation_summary tool."""
+        return await self.execute_tool(
+            domain="accounting",
+            tool_name="get_bank_reconciliation_summary",
             params=_clean_params(params),
             company_id=company_id,
             user_token=user_token,

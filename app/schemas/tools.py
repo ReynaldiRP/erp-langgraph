@@ -31,6 +31,113 @@ class AccountBalanceFilterSchema(BaseModel):
     account_code: Optional[str] = Field(None, description="Account code string (e.g. '111100')")
     date_from: Optional[str] = Field(None, description="Start date filter in YYYY-MM-DD format")
     date_to: Optional[str] = Field(None, description="End date filter in YYYY-MM-DD format")
+    include_breakdown: Optional[bool] = Field(None, description="Tampilkan rincian daftar akun (default True di backend). Jika False, hanya kembalikan blok totals")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+
+class GeneralLedgerFilterSchema(BaseModel):
+    """Input filter schema for accounting.get_general_ledger."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    account_id: Optional[int] = Field(None, description="Filter ID akun tunggal")
+    account_code: Optional[str] = Field(None, description="Filter kode akun spesifik (misal '111100')")
+    date_from: Optional[str] = Field(None, description="Batas awal tanggal mutasi (YYYY-MM-DD)")
+    date_to: Optional[str] = Field(None, description="Batas akhir tanggal mutasi (YYYY-MM-DD)")
+    journal_id: Optional[int] = Field(None, description="Filter buku jurnal tertentu")
+    status: Optional[str] = Field("post", description="Filter status jurnal: 'post', 'draft', 'all', 'cancel'")
+    limit: int = Field(50, ge=1, le=200, description="Batas baris transaksi per akun (default 50, maks 200)")
+    offset: int = Field(0, ge=0, description="Offset paginasi transaksi")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+
+class ProfitAndLossFilterSchema(BaseModel):
+    """Input filter schema for accounting.get_profit_and_loss."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    date_from: Optional[str] = Field(None, description="Tanggal awal periode pelaporan (YYYY-MM-DD)")
+    date_to: Optional[str] = Field(None, description="Tanggal akhir periode pelaporan (YYYY-MM-DD)")
+    include_breakdown: bool = Field(False, description="Tampilkan rincian hierarki grup, tipe, dan akun (default False)")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+
+class BalanceSheetFilterSchema(BaseModel):
+    """Input filter schema for accounting.get_balance_sheet."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    as_of_date: Optional[str] = Field(None, description="Tanggal cut-off saldo kumulatif (YYYY-MM-DD)")
+    date_to: Optional[str] = Field(None, description="Alias untuk as_of_date (YYYY-MM-DD)")
+    include_breakdown: bool = Field(False, description="Tampilkan hierarki Aset, Liabilitas, dan Ekuitas (default False)")
+
+    @field_validator("as_of_date")
+    @classmethod
+    def validate_as_of_date(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "as_of_date")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+    @model_validator(mode="after")
+    def sync_as_of_date(self) -> "BalanceSheetFilterSchema":
+        if not self.as_of_date and self.date_to:
+            self.as_of_date = self.date_to
+        return self
+
+
+class VendorBillsFilterSchema(BaseModel):
+    """Input filter schema for accounting.get_vendor_bills."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    vendor_id: Optional[int] = Field(None, description="Filter ID vendor spesifik")
+    vendor_name: Optional[str] = Field(None, description="Filter nama vendor")
+    status: Optional[str] = Field(None, description="Filter status faktur: 'draft', 'post', 'paid', 'cancel'")
+    due_status: Optional[Literal["all", "overdue", "due_soon"]] = Field("all", description="Filter jatuh tempo: 'all', 'overdue', 'due_soon'")
+    date_from: Optional[str] = Field(None, description="Batas awal tanggal faktur (YYYY-MM-DD)")
+    date_to: Optional[str] = Field(None, description="Batas akhir tanggal faktur (YYYY-MM-DD)")
+    limit: int = Field(50, ge=1, le=200, description="Jumlah baris data (default 50, maks 200)")
+    offset: int = Field(0, ge=0, description="Offset paginasi (default 0)")
+
+    @field_validator("date_from")
+    @classmethod
+    def validate_date_from(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_from")
+
+    @field_validator("date_to")
+    @classmethod
+    def validate_date_to(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_date_str(v, "date_to")
+
+
+class BankReconciliationFilterSchema(BaseModel):
+    """Input filter schema for accounting.get_bank_reconciliation_summary."""
+    company_id: Optional[int] = Field(None, description="Company ID")
+    journal_id: Optional[int] = Field(None, description="ID buku jurnal bank (opsional)")
+    date_from: Optional[str] = Field(None, description="Tanggal awal rentang rekonsiliasi (YYYY-MM-DD)")
+    date_to: Optional[str] = Field(None, description="Tanggal akhir rentang rekonsiliasi (YYYY-MM-DD)")
 
     @field_validator("date_from")
     @classmethod
@@ -299,10 +406,21 @@ class ERPResponseEnvelope(BaseModel, Generic[T]):
 # 2.1 Accounting Tool Data Models
 # ------------------------------------------------------------------------------
 
+class AccountBalanceTotals(BaseModel):
+    opening_balance: float = 0.0
+    period_debit: float = 0.0
+    period_credit: float = 0.0
+    ending_balance: float = 0.0
+
+
 class AccountBalanceItem(BaseModel):
     account_id: int
     account_code: str
     account_name: Optional[str] = None
+    opening_balance: Optional[float] = None
+    period_debit: Optional[float] = None
+    period_credit: Optional[float] = None
+    ending_balance: Optional[float] = None
     total_debit: float = 0.0
     total_credit: float = 0.0
     net_balance: float = 0.0
@@ -310,10 +428,118 @@ class AccountBalanceItem(BaseModel):
 
 
 class AccountBalanceDataSchema(BaseModel):
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    totals: Optional[AccountBalanceTotals] = None
     accounts: List[AccountBalanceItem] = Field(default_factory=list)
     total_debit: float = 0.0
     total_credit: float = 0.0
     net_balance: float = 0.0
+
+
+class GeneralLedgerTransactionItem(BaseModel):
+    date: Optional[str] = None
+    entry_number: Optional[str] = None
+    ref: Optional[str] = None
+    description: Optional[str] = None
+    partner_name: Optional[str] = None
+    debit: float = 0.0
+    credit: float = 0.0
+    running_balance: float = 0.0
+
+
+class GeneralLedgerAccountItem(BaseModel):
+    account_id: int
+    account_code: str
+    account_name: Optional[str] = None
+    opening_balance: float = 0.0
+    period_debit: float = 0.0
+    period_credit: float = 0.0
+    closing_balance: float = 0.0
+    items: List[GeneralLedgerTransactionItem] = Field(default_factory=list)
+
+
+class GeneralLedgerDataSchema(BaseModel):
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    accounts: List[GeneralLedgerAccountItem] = Field(default_factory=list)
+
+
+class ProfitAndLossSummarySchema(BaseModel):
+    total_revenue: float = 0.0
+    cogs: float = 0.0
+    gross_profit: float = 0.0
+    operating_expenses: float = 0.0
+    operating_profit: float = 0.0
+    other_net: float = 0.0
+    net_profit: float = 0.0
+    gross_margin_percent: float = 0.0
+
+
+class ProfitAndLossDataSchema(BaseModel):
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    summary: ProfitAndLossSummarySchema = Field(default_factory=ProfitAndLossSummarySchema)
+    breakdown: Optional[List[Dict[str, Any]]] = None
+
+
+class BalanceSheetNetBalanceCheck(BaseModel):
+    is_balanced: bool = True
+    difference: float = 0.0
+    assets_equal_liabilities_plus_equity: bool = True
+
+
+class BalanceSheetSummarySchema(BaseModel):
+    total_assets: float = 0.0
+    total_liabilities: float = 0.0
+    total_equity: float = 0.0
+    total_liabilities_and_equity: float = 0.0
+    net_balance_check: Optional[BalanceSheetNetBalanceCheck] = None
+
+
+class BalanceSheetDataSchema(BaseModel):
+    as_of_date: Optional[str] = None
+    summary: BalanceSheetSummarySchema = Field(default_factory=BalanceSheetSummarySchema)
+    breakdown: Optional[List[Dict[str, Any]]] = None
+
+
+class VendorBillItem(BaseModel):
+    id: int
+    number: str
+    vendor_id: Optional[int] = None
+    vendor_name: Optional[str] = None
+    bill_date: Optional[str] = None
+    due_date: Optional[str] = None
+    total_amount: float = 0.0
+    paid_amount: float = 0.0
+    residual_balance: float = 0.0
+    payment_status: Optional[str] = None
+    due_status: Optional[str] = None
+
+
+class VendorBillsDataSchema(BaseModel):
+    total_count: int = 0
+    limit: int = 50
+    offset: int = 0
+    bills: List[VendorBillItem] = Field(default_factory=list)
+
+
+class BankReconciliationSummarySchema(BaseModel):
+    bank_statement_balance: float = 0.0
+    erp_book_balance: float = 0.0
+    difference: float = 0.0
+    unreconciled_statement_lines_count: int = 0
+    unreconciled_gl_lines_count: int = 0
+
+
+class BankReconciliationDataSchema(BaseModel):
+    journal_id: Optional[int] = None
+    journal_name: Optional[str] = None
+    bank_account_code: Optional[str] = None
+    bank_account_name: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    summary: BankReconciliationSummarySchema = Field(default_factory=BankReconciliationSummarySchema)
 
 
 class JournalEntryItem(BaseModel):
@@ -562,6 +788,26 @@ class JournalEntriesResponseSchema(ERPResponseEnvelope[JournalEntriesDataSchema]
     pass
 
 
+class GeneralLedgerResponseSchema(ERPResponseEnvelope[GeneralLedgerDataSchema]):
+    pass
+
+
+class ProfitAndLossResponseSchema(ERPResponseEnvelope[ProfitAndLossDataSchema]):
+    pass
+
+
+class BalanceSheetResponseSchema(ERPResponseEnvelope[BalanceSheetDataSchema]):
+    pass
+
+
+class VendorBillsResponseSchema(ERPResponseEnvelope[VendorBillsDataSchema]):
+    pass
+
+
+class BankReconciliationResponseSchema(ERPResponseEnvelope[BankReconciliationDataSchema]):
+    pass
+
+
 class StockLevelResponseSchema(ERPResponseEnvelope[StockLevelDataSchema]):
     pass
 
@@ -642,6 +888,11 @@ TOOL_DOMAIN_MAP: Dict[str, str] = {
     "fetch_vendor_invoices": "accounting",
     "get_account_balance": "accounting",
     "get_journal_entries": "accounting",
+    "get_general_ledger": "accounting",
+    "get_profit_and_loss": "accounting",
+    "get_balance_sheet": "accounting",
+    "get_vendor_bills": "accounting",
+    "get_bank_reconciliation_summary": "accounting",
     "get_stock_level": "inventory",
     "get_product_info": "inventory",
     "get_locations": "inventory",

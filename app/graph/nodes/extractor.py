@@ -25,6 +25,11 @@ from app.graph.state import AgentState, ToolCallPlan
 from app.schemas.tools import (
     AccountBalanceFilterSchema,
     JournalEntriesFilterSchema,
+    GeneralLedgerFilterSchema,
+    ProfitAndLossFilterSchema,
+    BalanceSheetFilterSchema,
+    VendorBillsFilterSchema,
+    BankReconciliationFilterSchema,
     StockLevelFilterSchema,
     ProductInfoFilterSchema,
     VendorInvoiceFilterSchema,
@@ -45,6 +50,11 @@ TOOL_SCHEMA_REGISTRY: Dict[str, Type[BaseModel]] = {
     "fetch_vendor_invoices": VendorInvoiceFilterSchema,
     "get_journal_entries": JournalEntriesFilterSchema,
     "get_account_balance": AccountBalanceFilterSchema,
+    "get_general_ledger": GeneralLedgerFilterSchema,
+    "get_profit_and_loss": ProfitAndLossFilterSchema,
+    "get_balance_sheet": BalanceSheetFilterSchema,
+    "get_vendor_bills": VendorBillsFilterSchema,
+    "get_bank_reconciliation_summary": BankReconciliationFilterSchema,
     "get_stock_level": StockLevelFilterSchema,
     "get_product_info": ProductInfoFilterSchema,
     "get_locations": LocationsFilterSchema,
@@ -677,6 +687,86 @@ def _fallback_extract_product_categories(query: str) -> Dict[str, Any]:
     return params
 
 
+def _fallback_extract_general_ledger(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for general ledger inquiries."""
+    params: Dict[str, Any] = {"limit": 50, "offset": 0}
+    cleaned = query.strip()
+    acc_codes = re.findall(r"\b([1-6]\d{3,7})\b", cleaned)
+    if acc_codes:
+        params["account_code"] = acc_codes[0]
+    date_from, date_to = resolve_relative_dates(cleaned, ref_date)
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+def _fallback_extract_profit_and_loss(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for profit and loss inquiries (compact by default)."""
+    params: Dict[str, Any] = {"include_breakdown": False}
+    cleaned = query.strip().lower()
+    if any(k in cleaned for k in ("rincian", "detail", "breakdown", "per akun", "daftar akun", "hierarki")):
+        params["include_breakdown"] = True
+    date_from, date_to = resolve_relative_dates(query, ref_date)
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+def _fallback_extract_balance_sheet(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for balance sheet inquiries (compact by default)."""
+    params: Dict[str, Any] = {"include_breakdown": False}
+    cleaned = query.strip().lower()
+    if any(k in cleaned for k in ("rincian", "detail", "breakdown", "per akun", "daftar akun", "hierarki")):
+        params["include_breakdown"] = True
+    date_from, date_to = resolve_relative_dates(query, ref_date)
+    if date_to:
+        params["as_of_date"] = date_to
+    elif date_from:
+        params["as_of_date"] = date_from
+    return params
+
+
+def _fallback_extract_vendor_bills(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for vendor bills and AP aging."""
+    params: Dict[str, Any] = {"due_status": "all", "limit": 50, "offset": 0}
+    cleaned = query.strip().lower()
+    if any(k in cleaned for k in ("overdue", "lewat jatuh tempo", "jatuh tempo", "terlambat")):
+        params["due_status"] = "overdue"
+    elif any(k in cleaned for k in ("due soon", "segera jatuh tempo", "mendekati tempo", "akan tempo")):
+        params["due_status"] = "due_soon"
+
+    for st in ("draft", "post", "posted", "paid", "cancel"):
+        if re.search(rf"\b{re.escape(st)}\b", cleaned):
+            params["status"] = "post" if st == "posted" else st
+            break
+
+    inv_data = _fallback_extract_vendor_invoice(query, ref_date)
+    if inv_data.get("vendor_name"):
+        params["vendor_name"] = inv_data["vendor_name"]
+    date_from, date_to = resolve_relative_dates(query, ref_date)
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+def _fallback_extract_bank_reconciliation(query: str, ref_date: Optional[date] = None) -> Dict[str, Any]:
+    """Deterministic heuristic extraction for bank reconciliation summary."""
+    params: Dict[str, Any] = {}
+    cleaned = query.strip()
+    date_from, date_to = resolve_relative_dates(cleaned, ref_date)
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
 def _extract_single_tool_params(
     plan: Dict[str, Any],
     all_plans: List[Dict[str, Any]],
@@ -792,6 +882,16 @@ def _extract_single_tool_params(
             extracted_dict = _fallback_extract_account_balance(sub_query, today)
         elif tool_name == "get_journal_entries":
             extracted_dict = _fallback_extract_journal_entries(sub_query, today)
+        elif tool_name == "get_general_ledger":
+            extracted_dict = _fallback_extract_general_ledger(sub_query, today)
+        elif tool_name == "get_profit_and_loss":
+            extracted_dict = _fallback_extract_profit_and_loss(sub_query, today)
+        elif tool_name == "get_balance_sheet":
+            extracted_dict = _fallback_extract_balance_sheet(sub_query, today)
+        elif tool_name == "get_vendor_bills":
+            extracted_dict = _fallback_extract_vendor_bills(sub_query, today)
+        elif tool_name == "get_bank_reconciliation_summary":
+            extracted_dict = _fallback_extract_bank_reconciliation(sub_query, today)
         elif tool_name == "get_stock_history":
             extracted_dict = _fallback_extract_stock_history(sub_query, today)
         elif tool_name == "get_transfers":
