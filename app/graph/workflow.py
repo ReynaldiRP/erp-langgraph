@@ -10,6 +10,7 @@ import concurrent.futures
 import logging
 import threading
 from typing import Any, Dict, List, Optional
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, START, END
 
@@ -183,12 +184,40 @@ def create_workflow_graph(
 default_workflow_graph = create_workflow_graph()
 
 
+def _hydrate_messages_from_history(
+    history: Optional[List[Any]],
+    user_query: str,
+) -> Optional[List[BaseMessage]]:
+    """
+    Build LangChain message list from serialized history payload if available.
+    Ensures recent conversational context is preserved when RAM checkpointer is empty.
+    """
+    if not history:
+        return None
+    hydrated: List[BaseMessage] = []
+    for item in history:
+        role = getattr(item, "role", None) or (item.get("role") if isinstance(item, dict) else "")
+        content = getattr(item, "content", None) or (item.get("content") if isinstance(item, dict) else "")
+        if not content or not isinstance(content, str) or not content.strip():
+            continue
+        role_lower = str(role).strip().lower()
+        if role_lower in ("user", "human"):
+            hydrated.append(HumanMessage(content=content.strip()))
+        else:
+            hydrated.append(AIMessage(content=content.strip()))
+    if not hydrated:
+        return None
+    hydrated.append(HumanMessage(content=user_query))
+    return hydrated
+
+
 async def arun_workflow(
     user_query: str,
     user_token: Optional[str] = None,
     company_id: Optional[int] = None,
     thread_id: Optional[str] = None,
     graph: Optional[Any] = None,
+    history: Optional[List[Any]] = None,
 ) -> AgentState:
     """
     Asynchronously run the compiled workflow graph for a user query.
@@ -199,6 +228,7 @@ async def arun_workflow(
         company_id: Optional target company ID.
         thread_id: Optional conversational session thread ID for MemorySaver.
         graph: Optional compiled StateGraph instance.
+        history: Optional list of past conversation messages for stateless memory recovery.
 
     Returns:
         Final resulting AgentState dictionary.
@@ -206,20 +236,29 @@ async def arun_workflow(
     active_graph = graph or default_workflow_graph
     config = {"configurable": {"thread_id": thread_id or "default_session"}}
 
+    checkpoint = None
+    try:
+        checkpoint = await active_graph.aget_state(config)
+    except Exception:
+        pass
+
     # Multi-turn company ID persistence across turns in the same thread session
     effective_company_id = company_id
     if effective_company_id is None or effective_company_id == settings.DEFAULT_COMPANY_ID:
-        try:
-            checkpoint = await active_graph.aget_state(config)
-            if checkpoint and checkpoint.values and checkpoint.values.get("company_id"):
-                effective_company_id = checkpoint.values["company_id"]
-        except Exception:
-            pass
+        if checkpoint and checkpoint.values and checkpoint.values.get("company_id"):
+            effective_company_id = checkpoint.values["company_id"]
+
+    # History hydration for stateless recovery (e.g. after worker reload/service restart)
+    hydrated_messages = None
+    existing_messages = checkpoint.values.get("messages", []) if (checkpoint and checkpoint.values) else []
+    if not existing_messages and history:
+        hydrated_messages = _hydrate_messages_from_history(history, user_query)
 
     initial_state = create_initial_state(
         user_query=user_query,
         user_token=user_token,
         company_id=effective_company_id,
+        messages=hydrated_messages,
     )
 
     final_state = await active_graph.ainvoke(initial_state, config=config)
@@ -232,18 +271,32 @@ async def astream_workflow_steps(
     company_id: Optional[int] = None,
     thread_id: Optional[str] = None,
     graph: Optional[Any] = None,
+    history: Optional[List[Any]] = None,
 ):
     """
     Asynchronously stream individual node completion events from the workflow StateGraph.
     Yields tuples of (node_name, node_update_dict, accumulated_state_dict).
     """
     active_graph = graph or default_workflow_graph
+    config = {"configurable": {"thread_id": thread_id or "default_session"}}
+
+    checkpoint = None
+    try:
+        checkpoint = await active_graph.aget_state(config)
+    except Exception:
+        pass
+
+    hydrated_messages = None
+    existing_messages = checkpoint.values.get("messages", []) if (checkpoint and checkpoint.values) else []
+    if not existing_messages and history:
+        hydrated_messages = _hydrate_messages_from_history(history, user_query)
+
     initial_state = create_initial_state(
         user_query=user_query,
         user_token=user_token,
         company_id=company_id,
+        messages=hydrated_messages,
     )
-    config = {"configurable": {"thread_id": thread_id or "default_session"}}
     accumulated_state = dict(initial_state)
 
     async for chunk in active_graph.astream(initial_state, config=config, stream_mode="updates"):
@@ -294,6 +347,7 @@ def run_workflow_sync(
     thread_id: Optional[str] = None,
     graph: Optional[Any] = None,
     on_node_finish: Optional[Any] = None,
+    history: Optional[List[Any]] = None,
 ) -> AgentState:
     """
     Synchronously run the compiled workflow graph (safe for CLI and test runners).
@@ -315,6 +369,7 @@ def run_workflow_sync(
                 company_id=company_id,
                 thread_id=thread_id,
                 graph=graph,
+                history=history,
             ):
                 on_node_finish(node_name, update, acc_state)
                 acc = acc_state
@@ -327,6 +382,7 @@ def run_workflow_sync(
             company_id=company_id,
             thread_id=thread_id,
             graph=graph,
+            history=history,
         )
 
     if loop and loop.is_running():

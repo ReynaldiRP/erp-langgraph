@@ -58,12 +58,16 @@ async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
     Handle natural language ERP inquiries via LangGraph StateGraph pipeline.
     """
     try:
-        final_state: Dict[str, Any] = await arun_workflow(
-            user_query=payload.query,
-            user_token=payload.user_token,
-            company_id=payload.company_id,
-            thread_id=payload.thread_id,
-        )
+        workflow_kwargs = {
+            "user_query": payload.query,
+            "user_token": payload.user_token,
+            "company_id": payload.company_id,
+            "thread_id": payload.thread_id,
+        }
+        if payload.history is not None:
+            workflow_kwargs["history"] = payload.history
+
+        final_state: Dict[str, Any] = await arun_workflow(**workflow_kwargs)
 
         raw_status = final_state.get("verification_status")
         if raw_status is not None:

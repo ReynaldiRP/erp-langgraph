@@ -559,6 +559,27 @@ class TestExtractorNode(unittest.TestCase):
         params = result.get("extracted_params", {})
         self.assertEqual(params.get("code"), "AMPLOP BUBBLE 15x18 + 4CM LK")
 
+    def test_extractor_product_name_strips_leading_filler_words(self):
+        """Extractor cleanly strips leading filler words ('product', 'produk', 'barang', 'sku') from product codes."""
+        test_queries = [
+            ("coba cek stok untuk product FP BROTHER DYE ANTI UV 100ML - MAGENTA", "FP BROTHER DYE ANTI UV 100ML - MAGENTA"),
+            ("cek stok untuk produk FP BROTHER DYE ANTI UV 100ML - MAGENTA", "FP BROTHER DYE ANTI UV 100ML - MAGENTA"),
+            ("cek stok barang FP BROTHER DYE ANTI UV 100ML - MAGENTA", "FP BROTHER DYE ANTI UV 100ML - MAGENTA"),
+            ("cek stok SKU: 100040203", "100040203"),
+            ("cek stok kode 100040203", "100040203"),
+        ]
+        for query, expected_code in test_queries:
+            state = create_initial_state(query)
+            state["detected_domain"] = "inventory"
+            state["detected_tool"] = "get_stock_level"
+            result = extractor_node(state)
+            params = result.get("extracted_params", {})
+            self.assertEqual(
+                params.get("code"),
+                expected_code,
+                f"Failed stripping prefix for query: {query}",
+            )
+
     def test_extractor_followup_location_slot_filling_from_history(self):
         """Extractor slot-fills product code from previous turn when user only supplies location in follow-up."""
         history = [
@@ -754,6 +775,15 @@ class TestLangGraphPipelineChain(unittest.TestCase):
             "silakan coba lagi",
             "coba lagi ya",
             "coba lagi dong",
+            "coba cek lagi",
+            "cek lagi",
+            "coba periksa lagi",
+            "periksa lagi",
+            "coba cari lagi",
+            "cari lagi",
+            "tolong cek lagi ya",
+            "cek sekali lagi dong",
+            "bisa coba cek lagi",
             "ulang",
             "ulangi",
             "coba ulang",
@@ -763,6 +793,17 @@ class TestLangGraphPipelineChain(unittest.TestCase):
             "retry",
             "tes lagi",
             "mohon ulangi lagi dong",
+            "coba cek lagi?",
+            "coba cek lagi!",
+            "bisa dicek lagi",
+            "coba dicek lagi",
+            "bisa tolong dicek lagi?",
+            "coba cek lagi mas",
+            "coba cek lagi min",
+            "coba cek lagi gan",
+            "cek ulang",
+            "coba cari ulang",
+            "bisa tolong dicek ulang dong",
         ]
         for q in positive_queries:
             self.assertTrue(is_retry_query(q), f"Should match retry query: '{q}'")
@@ -821,6 +862,23 @@ class TestLangGraphPipelineChain(unittest.TestCase):
         self.assertEqual(result["detected_tool"], "get_stock_level")
         self.assertEqual(result["user_query"], "Cek stok kertas foto A4")
         self.assertIn("Mengulang permintaan:", result["retry_instruction"])
+
+    def test_router_node_coba_cek_lagi_replays_product_inquiry(self):
+        """Router node must replay routing on prior query when 'coba cek lagi' is received."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        state = create_initial_state("coba cek lagi")
+        state["messages"] = [
+            HumanMessage(content="coba cek stok untuk product FP BROTHER DYE ANTI UV 100ML - MAGENTA"),
+            AIMessage(content="### Produk Tidak Ditemukan\nProduk tidak ditemukan."),
+            HumanMessage(content="coba cek lagi"),
+        ]
+
+        result = router_node(state)
+        self.assertEqual(result["detected_domain"], "inventory")
+        self.assertEqual(result["detected_tool"], "get_stock_level")
+        self.assertEqual(result["user_query"], "coba cek stok untuk product FP BROTHER DYE ANTI UV 100ML - MAGENTA")
+        self.assertIn("Mengulang permintaan:", result.get("retry_instruction", ""))
 
     def test_router_node_retry_with_no_history(self):
         """Router node with empty history and 'coba lagi' must route to general with NO_PREVIOUS_QUERY_TO_RETRY."""
@@ -1247,6 +1305,78 @@ class TestMultiToolExtractorNode(unittest.TestCase):
         self.assertNotIn("date_from", p2)
         self.assertNotIn("date_to", p2)
         self.assertNotIn("vendor_name", p2)
+
+    def test_vendor_extraction_with_hyphens_ampersands_and_word_boundaries(self):
+        """Verify vendor extraction preserves hyphens, ampersands, and does not truncate on delimiter prefixes."""
+        from app.graph.nodes.extractor import _fallback_extract_vendor_invoice
+
+        res1 = _fallback_extract_vendor_invoice("cek tagihan vendor MEGA-COM")
+        self.assertEqual(res1.get("vendor_name"), "MEGA-COM")
+
+        res2 = _fallback_extract_vendor_invoice("tagihan vendor PT. A&W bulan ini")
+        self.assertEqual(res2.get("vendor_name"), "PT. A&W")
+
+        res3 = _fallback_extract_vendor_invoice("tagihan vendor PT. DIAN MAKMUR")
+        self.assertEqual(res3.get("vendor_name"), "PT. DIAN MAKMUR")
+
+        res4 = _fallback_extract_vendor_invoice("cek vendor CV. HARIAN JAYA")
+        self.assertEqual(res4.get("vendor_name"), "CV. HARIAN JAYA")
+
+    def test_product_name_not_truncated_by_delimiter_substrings(self):
+        """Verify product names containing delimiter prefixes (e.g. DIGITAL, HARIAN) are not cut short."""
+        from app.graph.nodes.extractor import _fallback_extract_stock_level, _fallback_extract_product_info
+
+        res1 = _fallback_extract_stock_level("cek stok KERTAS DIGITAL PRINTING")
+        self.assertEqual(res1.get("code"), "KERTAS DIGITAL PRINTING")
+
+        res2 = _fallback_extract_stock_level("cek stok BUKU HARIAN")
+        self.assertEqual(res2.get("code"), "BUKU HARIAN")
+
+        res3 = _fallback_extract_product_info("info produk KERTAS DIGITAL PRINTING")
+        self.assertEqual(res3.get("search"), "KERTAS DIGITAL PRINTING")
+
+    def test_multi_segment_document_number_extraction(self):
+        """Verify branch-prefixed journal entries and multi-segment documents are captured in full."""
+        from app.graph.nodes.extractor import _fallback_extract_journal_entries, _fallback_extract_vendor_invoice
+        from app.graph.nodes.router import classify_query_rule_based
+
+        res1 = _fallback_extract_journal_entries("cek entri jurnal BDG/JE/2026/00009")
+        self.assertEqual(res1.get("entry_number"), "BDG/JE/2026/00009")
+
+        res2 = _fallback_extract_vendor_invoice("cek tagihan PC/2026/00002")
+        self.assertEqual(res2.get("search"), "PC/2026/00002")
+
+        r_res = classify_query_rule_based("cek entri jurnal BDG/JE/2026/00009")
+        self.assertEqual(r_res.get("detected_tool"), "get_journal_entries")
+
+    def test_slash_and_hyphen_date_normalization(self):
+        """Verify relative date resolver parses DD/MM/YYYY, DD-MM-YYYY, and YYYY/MM/DD to ISO YYYY-MM-DD."""
+        from app.graph.nodes.extractor import resolve_relative_dates
+
+        d1, _ = resolve_relative_dates("transaksi tanggal 10/11/2026")
+        self.assertEqual(d1, "2026-11-10")
+
+        d2, _ = resolve_relative_dates("transaksi tanggal 2026/11/10")
+        self.assertEqual(d2, "2026-11-10")
+
+        d3, _ = resolve_relative_dates("transaksi tanggal 10-11-2026")
+        self.assertEqual(d3, "2026-11-10")
+
+    def test_category_and_warehouse_listing_without_search_keyword(self):
+        """Verify generic category/warehouse list requests do not extract the query itself as a search filter."""
+        from app.graph.nodes.extractor import _fallback_extract_product_categories, _fallback_extract_warehouses
+
+        cat_res = _fallback_extract_product_categories("daftar kategori")
+        self.assertNotIn("search", cat_res)
+
+        cat_res2 = _fallback_extract_product_categories("list kategori produk")
+        self.assertNotIn("search", cat_res2)
+
+        wh_res = _fallback_extract_warehouses("daftar gudang")
+        self.assertNotIn("search", wh_res)
+
+        wh_res2 = _fallback_extract_warehouses("list master warehouses")
+        self.assertNotIn("search", wh_res2)
 
 
 

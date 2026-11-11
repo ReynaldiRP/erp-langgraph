@@ -154,6 +154,35 @@ class TestChatEndpoint(unittest.TestCase):
             thread_id="thread_custom_abc_456",
         )
 
+    @patch("app.main.arun_workflow", new_callable=AsyncMock)
+    def test_chat_history_parameter_forwarding(self, mock_workflow):
+        """History parameter in ChatRequest is forwarded to arun_workflow."""
+        mock_workflow.return_value = {
+            "final_answer": "Stok barang tersedia",
+            "detected_domain": "inventory",
+            "verification_status": "VALID",
+            "error_message": None,
+        }
+        history = [
+            {"role": "user", "content": "cek stok tinta"},
+            {"role": "assistant", "content": "Tinta ready 100 unit"},
+        ]
+        payload = {
+            "query": "coba cek lagi",
+            "company_id": 1,
+            "thread_id": "thread_hydrated_123",
+            "history": history,
+        }
+        response = self.client.post("/api/v1/chat", json=payload)
+        self.assertEqual(response.status_code, 200)
+
+        mock_workflow.assert_awaited_once()
+        call_kwargs = mock_workflow.await_args.kwargs
+        self.assertEqual(call_kwargs.get("user_query"), "coba cek lagi")
+        self.assertEqual(call_kwargs.get("thread_id"), "thread_hydrated_123")
+        self.assertIsNotNone(call_kwargs.get("history"))
+        self.assertEqual(len(call_kwargs["history"]), 2)
+
     def test_chat_empty_query_validation_422(self):
         """Empty query string returns HTTP 422 Unprocessable Entity."""
         response = self.client.post("/api/v1/chat", json={"query": ""})

@@ -330,6 +330,44 @@ class TestWorkflowEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(res_3.get("detected_tool"))
             self.assertIn("Tidak Ada Permintaan Sebelumnya", res_3["final_answer"])
 
+    async def test_workflow_history_hydration_from_stateless_payload(self):
+        """
+        Scenario 9: When memory checkpoint is empty (e.g. server restart),
+        arun_workflow successfully hydrates state messages from the history payload.
+        """
+        mock_client = MagicMock(spec=DjangoCoreClient)
+        mock_client.fetch_stock_level = AsyncMock(
+            return_value=[
+                {
+                    "code": "FP BROTHER DYE ANTI UV 100ML - MAGENTA",
+                    "name": "FP BROTHER DYE ANTI UV 100ML - MAGENTA",
+                    "company_id": 1,
+                    "company_name": "FastPrint",
+                    "location_name": "Gudang Utama",
+                    "qty_on_hand": 25.0,
+                }
+            ]
+        )
+
+        with patch("app.graph.nodes.tool_node.DjangoCoreClient", return_value=mock_client):
+            history_payload = [
+                {"role": "user", "content": "coba cek stok untuk product FP BROTHER DYE ANTI UV 100ML - MAGENTA"},
+                {"role": "assistant", "content": "### Produk Tidak Ditemukan\nProduk tidak ditemukan."},
+            ]
+
+            # Call on a fresh thread with no prior checkpoints, passing history
+            res = await arun_workflow(
+                user_query="coba cek lagi",
+                thread_id="test_hydrated_session_99",
+                history=history_payload,
+            )
+
+            self.assertEqual(res.get("detected_domain"), "inventory")
+            self.assertEqual(res.get("detected_tool"), "get_stock_level")
+            self.assertEqual(res.get("verification_status"), "VALID")
+            self.assertIn("FP BROTHER DYE ANTI UV 100ML - MAGENTA", res.get("final_answer", ""))
+            self.assertIn("25.0 unit", res.get("final_answer", ""))
+
 
 class TestSynchronousRunnerHelper(unittest.TestCase):
     """Test suite validating run_workflow_sync and arun_workflow wrappers."""
