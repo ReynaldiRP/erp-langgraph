@@ -41,6 +41,17 @@ class ChatRequest(BaseModel):
         return cleaned
 
 
+class FollowupSuggestion(BaseModel):
+    """
+    Structured recommendation for contextual next-step user prompts.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    label: str = Field(..., description="Short button label displayed on chip")
+    query: str = Field(..., description="Full executable prompt triggered when clicked")
+    icon: Optional[str] = Field(default="fa-arrow-right", description="FontAwesome icon class")
+
+
 class ChatResponse(BaseModel):
     """
     Outgoing response model for ERP AI Chat Endpoint.
@@ -51,3 +62,7 @@ class ChatResponse(BaseModel):
     detected_domain: Optional[str] = Field(default=None, description="Classified intent domain")
     verification_status: Optional[str] = Field(default=None, description="Verification status (VALID, EMPTY, RETRY, ERROR)")
     error_message: Optional[str] = Field(default=None, description="Error message if execution encountered failures")
+    suggested_followups: Optional[List[FollowupSuggestion]] = Field(
+        default_factory=list,
+        description="Context-aware follow-up queries generated directly by AI provider"
+    )

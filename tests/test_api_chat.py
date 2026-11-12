@@ -125,6 +125,30 @@ class TestChatEndpoint(unittest.TestCase):
         )
 
     @patch("app.main.arun_workflow", new_callable=AsyncMock)
+    def test_chat_returns_suggested_followups(self, mock_workflow):
+        """POST /api/v1/chat includes suggested_followups in ChatResponse."""
+        mock_workflow.return_value = {
+            "final_answer": "Stok barang tersedia 120 pcs",
+            "detected_domain": "inventory",
+            "verification_status": "VALID",
+            "error_message": None,
+            "suggested_followups": [
+                {"label": "Riwayat Mutasi", "query": "Cek riwayat kartu stok", "icon": "fa-clock"}
+            ],
+        }
+
+        response = self.client.post(
+            "/api/v1/chat",
+            json={"query": "Cek stok SKU-8889"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("suggested_followups", data)
+        self.assertEqual(len(data["suggested_followups"]), 1)
+        self.assertEqual(data["suggested_followups"][0]["label"], "Riwayat Mutasi")
+
+    @patch("app.main.arun_workflow", new_callable=AsyncMock)
     def test_chat_parameter_forwarding(self, mock_workflow):
         """Explicit parameters (company_id, user_token, thread_id) are forwarded to arun_workflow."""
         mock_workflow.return_value = {

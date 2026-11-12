@@ -69,6 +69,7 @@ class AgentState(TypedDict, total=False):
     # 6. Final Presentation & Error Reporting
     final_answer: Optional[str]
     error_message: Optional[str]
+    suggested_followups: Optional[List[Dict[str, str]]]
 
     # 7. Context Management & Long-Term Memory
     conversation_summary: Optional[str]

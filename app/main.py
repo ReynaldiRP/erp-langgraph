@@ -83,6 +83,7 @@ async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
             detected_domain=final_state.get("detected_domain"),
             verification_status=verification_status_str,
             error_message=final_state.get("error_message"),
+            suggested_followups=final_state.get("suggested_followups") or [],
         )
     except HTTPException:
         raise

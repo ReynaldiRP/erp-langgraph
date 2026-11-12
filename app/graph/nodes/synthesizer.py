@@ -3,10 +3,12 @@ Synthesizer Node for FastPrint ERP LangGraph Agent Workflow (TASK-4.5).
 Generates structured, professional final answers formatted in Indonesian Markdown
 based on state verification status, tool execution data, calculations, and error messages.
 """
+import json
 import logging
 import os
+import re
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -826,6 +828,266 @@ def format_deterministic_answer(state: AgentState) -> str:
     return _format_single_tool_presentation(tool, tool_result)
 
 
+def _extract_llm_followups(llm_output: str) -> Tuple[str, List[Dict[str, str]]]:
+    """
+    Extract structured follow-up recommendations from LLM output block.
+    Supports ```json:followups ... ```, ```json ... ```, or [FOLLOWUPS] ... [/FOLLOWUPS].
+
+    Returns:
+        Tuple of (clean_markdown_answer, list_of_followup_dicts)
+    """
+    if not llm_output or not isinstance(llm_output, str):
+        return ("", [])
+
+    raw = llm_output.strip()
+    followups: List[Dict[str, str]] = []
+    clean_text = raw
+
+    # 1. Match codeblock pattern: ```(?:json:followups|json)?\s*(\[\s*\{.*?\}\s*\])\s*```
+    codeblock_pat = re.compile(
+        r"```(?:json:followups|json)?\s*(\[\s*\{.*?\}\s*\])\s*```",
+        re.DOTALL | re.IGNORECASE,
+    )
+    match = codeblock_pat.search(raw)
+
+    if match:
+        json_str = match.group(1).strip()
+        try:
+            parsed = json.loads(json_str)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict) and item.get("label") and item.get("query"):
+                        followups.append({
+                            "label": str(item["label"]).strip()[:30],
+                            "query": str(item["query"]).strip(),
+                            "icon": str(item.get("icon", "fa-arrow-right")).strip() or "fa-arrow-right",
+                        })
+                if followups:
+                    clean_text = (raw[:match.start()] + raw[match.end():]).strip()
+        except Exception as exc:
+            logger.debug("Failed parsing LLM followups JSON block: %s", exc)
+
+    # 2. Tagged bracket pattern fallback: [FOLLOWUPS] ... [/FOLLOWUPS]
+    if not followups:
+        tagged_pat = re.compile(
+            r"\[FOLLOWUPS\]\s*(\[\s*\{.*?\}\s*\])\s*\[/FOLLOWUPS\]",
+            re.DOTALL | re.IGNORECASE,
+        )
+        t_match = tagged_pat.search(raw)
+        if t_match:
+            try:
+                parsed = json.loads(t_match.group(1).strip())
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, dict) and item.get("label") and item.get("query"):
+                            followups.append({
+                                "label": str(item["label"]).strip()[:30],
+                                "query": str(item["query"]).strip(),
+                                "icon": str(item.get("icon", "fa-arrow-right")).strip() or "fa-arrow-right",
+                            })
+                    if followups:
+                        clean_text = (raw[:t_match.start()] + raw[t_match.end():]).strip()
+            except Exception as exc:
+                logger.debug("Failed parsing LLM tagged followups: %s", exc)
+
+    return (clean_text, followups[:3])
+
+
+def generate_deterministic_followups(state: AgentState) -> List[Dict[str, str]]:
+    """
+    Generate context-aware follow-up prompt suggestions deterministically from state entities.
+    Acts as a robust fallback when LLM is offline or during testing.
+    """
+    suggestions: List[Dict[str, str]] = []
+    status = state.get("verification_status")
+    domain = state.get("detected_domain") or ""
+    tool = state.get("detected_tool") or ""
+    params = state.get("extracted_params") or {}
+
+    # Inspect parameters in active_tools if empty in extracted_params
+    if not params:
+        for plan in state.get("active_tools") or []:
+            if isinstance(plan, dict) and plan.get("params"):
+                params = plan["params"]
+                break
+
+    # 1. EMPTY Status Fallback
+    if status == "EMPTY":
+        if params.get("date_from") or params.get("date_to"):
+            suggestions.append({
+                "label": "Perluas Tanggal",
+                "query": "Coba cari transaksi tanpa batasan tanggal untuk periode lebih luas",
+                "icon": "fa-calendar-days",
+            })
+        if params.get("warehouse_name") or params.get("location_name") or params.get("company_id"):
+            suggestions.append({
+                "label": "Cek Semua Cabang",
+                "query": "Cek ketersediaan di seluruh cabang dan gudang perusahaan",
+                "icon": "fa-globe",
+            })
+        if params.get("code") or params.get("product_id"):
+            identifier = params.get("code") or params.get("product_id")
+            suggestions.append({
+                "label": f"Master {str(identifier)[:15]}",
+                "query": f"Tampilkan informasi master katalog untuk produk {identifier}",
+                "icon": "fa-circle-info",
+            })
+        if not suggestions:
+            suggestions.append({
+                "label": "Panduan Fitur AI",
+                "query": "/scope",
+                "icon": "fa-compass",
+            })
+        return suggestions[:3]
+
+    # 2. Inventory Domain
+    if domain == "inventory" or any(k in tool for k in ("stock", "product", "location", "warehouse", "scrap", "transfer")):
+        code = params.get("code") or params.get("product_id")
+        if not code and isinstance(state.get("tool_result"), dict):
+            products = state["tool_result"].get("products")
+            if isinstance(products, list) and len(products) > 0 and isinstance(products[0], dict):
+                code = products[0].get("code") or products[0].get("sku")
+        loc_name = params.get("warehouse_name") or params.get("location_name")
+
+        if code:
+            suggestions.append({
+                "label": f"Mutasi Stok {str(code)[:15]}",
+                "query": f"Cek riwayat pergerakan kartu stok untuk produk {code}",
+                "icon": "fa-clock-rotate-left",
+            })
+            suggestions.append({
+                "label": f"Detail Master {str(code)[:15]}",
+                "query": f"Tampilkan detail master produk dan harga {code}",
+                "icon": "fa-circle-info",
+            })
+        if loc_name:
+            suggestions.append({
+                "label": f"Stok {str(loc_name)[:15]}",
+                "query": f"Tampilkan seluruh stok barang di {loc_name}",
+                "icon": "fa-warehouse",
+            })
+        elif not code:
+            suggestions.append({
+                "label": "Peringatan Stok Menipis",
+                "query": "Tampilkan daftar produk dengan stok menipis atau di bawah batas minimum",
+                "icon": "fa-triangle-exclamation",
+            })
+            suggestions.append({
+                "label": "Daftar Gudang Aktif",
+                "query": "Tampilkan daftar master gudang dan lokasi penyimpanan",
+                "icon": "fa-warehouse",
+            })
+
+    # 3. Accounting Domain
+    elif domain == "accounting" or any(k in tool for k in ("balance", "bill", "invoice", "journal", "profit", "ledger", "bank")):
+        vendor = params.get("vendor_name")
+        acc = params.get("account_code")
+
+        # Vendor bills / invoices
+        if "bill" in tool or "invoice" in tool or vendor:
+            v_label = f" {str(vendor)[:12]}" if vendor else ""
+            suggestions.append({
+                "label": f"Tagihan Overdue{v_label}",
+                "query": f"Tampilkan tagihan vendor{f' {vendor}' if vendor else ''} yang telah lewat jatuh tempo (overdue)",
+                "icon": "fa-clock",
+            })
+            suggestions.append({
+                "label": f"Jurnal Transaksi{v_label}",
+                "query": f"Cek riwayat entri jurnal transaksi{f' terkait vendor {vendor}' if vendor else ' bulan ini'}",
+                "icon": "fa-book",
+            })
+            suggestions.append({
+                "label": "Saldo Kas & Bank",
+                "query": "Berapa total saldo kas dan rekening bank aktif saat ini?",
+                "icon": "fa-wallet",
+            })
+        # Bank recon
+        elif "bank" in tool or "recon" in tool:
+            j_name = params.get("journal_name") or "Bank Utama"
+            suggestions.append({
+                "label": f"Buku Besar {str(j_name)[:15]}",
+                "query": f"Tampilkan mutasi buku besar untuk {j_name} bulan ini",
+                "icon": "fa-book-open",
+            })
+            suggestions.append({
+                "label": "Posisi Neraca Keuangan",
+                "query": "Cek laporan neraca keuangan dan verifikasi persamaan aset vs liabilitas + ekuitas",
+                "icon": "fa-scale-balanced",
+            })
+        # Profit and loss
+        elif "profit" in tool:
+            suggestions.append({
+                "label": "Neraca Keuangan",
+                "query": "Cek laporan neraca keuangan dan verifikasi persamaan aset vs liabilitas + ekuitas",
+                "icon": "fa-scale-balanced",
+            })
+            suggestions.append({
+                "label": "Saldo Kas & Bank",
+                "query": "Berapa total saldo kas dan rekening bank aktif saat ini?",
+                "icon": "fa-wallet",
+            })
+            suggestions.append({
+                "label": "Tagihan Vendor Overdue",
+                "query": "Tampilkan daftar tagihan vendor yang overdue dan belum lunas",
+                "icon": "fa-file-invoice-dollar",
+            })
+        # Balance sheet
+        elif "balance_sheet" in tool:
+            suggestions.append({
+                "label": "Laba Rugi YTD",
+                "query": "Tampilkan ringkasan Laba Rugi tahun berjalan dan persentase gross margin",
+                "icon": "fa-chart-pie",
+            })
+            suggestions.append({
+                "label": "Rekonsiliasi Bank",
+                "query": "Cek ringkasan rekonsiliasi bank dan selisih buku besar kas/bank",
+                "icon": "fa-building-columns",
+            })
+            suggestions.append({
+                "label": "Saldo Kas & Bank",
+                "query": "Berapa total saldo kas dan rekening bank aktif saat ini?",
+                "icon": "fa-wallet",
+            })
+        # General ledger / Account balance
+        else:
+            if acc:
+                suggestions.append({
+                    "label": f"Buku Besar {acc}",
+                    "query": f"Tampilkan rincian transaksi buku besar akun {acc} periode ini",
+                    "icon": "fa-book-open",
+                })
+            suggestions.append({
+                "label": "Posisi Kas & Bank",
+                "query": "Berapa total saldo kas dan rekening bank aktif saat ini?",
+                "icon": "fa-wallet",
+            })
+            suggestions.append({
+                "label": "Cek Neraca Keuangan",
+                "query": "Cek laporan neraca keuangan dan verifikasi persamaan aset vs liabilitas + ekuitas",
+                "icon": "fa-scale-balanced",
+            })
+
+    # 4. General / Knowledge / Guardrail Fallback
+    if not suggestions:
+        suggestions.append({
+            "label": "Cek Stok Barang",
+            "query": "Cek stok produk di gudang",
+            "icon": "fa-boxes-stacked",
+        })
+        suggestions.append({
+            "label": "Saldo Kas & Bank",
+            "query": "Berapa total saldo kas dan rekening bank aktif saat ini?",
+            "icon": "fa-wallet",
+        })
+        suggestions.append({
+            "label": "Panduan Fitur AI",
+            "query": "/scope",
+            "icon": "fa-compass",
+        })
+
+    return suggestions[:3]
+
+
 def synthesizer_node(
     state: AgentState,
     llm: Optional[BaseChatModel] = None,
@@ -840,6 +1102,7 @@ def synthesizer_node(
     Returns:
         Partial AgentState update dictionary containing:
             - final_answer: Markdown formatted response string
+            - suggested_followups: Contextual follow-up suggestions generated by LLM or deterministic fallback
             - messages: [AIMessage(content=final_answer)]
     """
     user_query = state.get("user_query")
@@ -868,8 +1131,9 @@ def synthesizer_node(
             )
 
     final_text = deterministic_answer
+    followups: List[Dict[str, str]] = []
 
-    # Attempt LLM natural language polish if LLM is provided/available
+    # Attempt LLM natural language polish and follow-up generation if LLM is provided/available
     model = llm
     is_test_env = "unittest" in sys.modules or os.environ.get("FASTPRINT_TEST_ENV") == "true"
     if model is None and not is_test_env:
@@ -885,6 +1149,16 @@ def synthesizer_node(
                 "Sajikan data laporan berikut dalam Bahasa Indonesia yang formal, ringkas, dan jelas.\n"
                 "Pertahankan seluruh angka transaksi, kode, dan rincian tabel Markdown dengan akurat tanpa mengubah nilai.\n"
                 "DILARANG KERAS menghitung ulang atau mengestimasi angka nominal keuangan (omzet, HPP, laba kotor, laba bersih, selisih rekonsiliasi, saldo neraca). Seluruh angka wajib dikutip persis dari data laporan terstruktur.\n\n"
+                "Selain menyajikan data laporan di atas, susunlah 2 hingga 3 rekomendasi pertanyaan/prompt lanjutan yang paling logis, relevan, dan kontekstual untuk diajukan pengguna berikutnya berdasarkan data riil yang ditemukan di atas (misal: rincian transaksi terkait, mutasi kartu stok produk ini, cek tagihan overdue, atau rekonsiliasi bank).\n\n"
+                "ATURAN KETAT REKOMENDASI:\n"
+                "1. Wajib hanya menyarankan pertanyaan penelusuran data (READ-ONLY) pada modul FastPrint ERP. DILARANG menyarankan aksi membuat/mengubah transaksi.\n"
+                "2. Wajib menggunakan entitas riil (kode SKU, nama vendor, kode akun, nama gudang) yang terdapat pada data di atas.\n"
+                "3. Formatkan rekomendasi di akhir respons dalam blok JSON khusus berikut:\n"
+                "```json:followups\n"
+                "[\n"
+                '  {"label": "Label Singkat (1-3 kata)", "query": "Prompt lengkap yang akan dieksekusi", "icon": "fa-icon-name"}\n'
+                "]\n"
+                "```\n\n"
                 f"Pertanyaan Pengguna: {user_query}\n"
                 f"Data Laporan Terstruktur:\n{deterministic_answer}"
             )
@@ -894,15 +1168,24 @@ def synthesizer_node(
             ])
             content = getattr(response, "content", None)
             if content and isinstance(content, str) and content.strip():
-                final_text = content.strip()
+                clean_ans, llm_followups = _extract_llm_followups(content.strip())
+                if clean_ans:
+                    final_text = clean_ans
+                if llm_followups:
+                    followups = llm_followups
         except Exception as exc:
             logger.warning(f"LLM synthesis failed, falling back to deterministic output: {exc}")
             final_text = deterministic_answer
+
+    # Fallback to deterministic follow-up generation if LLM didn't provide suggestions
+    if not followups:
+        followups = generate_deterministic_followups(state)
 
     if retry_header and not final_text.startswith("> 🔄"):
         final_text = f"{retry_header}{final_text}"
 
     return {
         "final_answer": final_text,
+        "suggested_followups": followups,
         "messages": [AIMessage(content=final_text)],
     }
