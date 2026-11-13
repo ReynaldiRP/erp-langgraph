@@ -113,6 +113,7 @@ class DjangoCoreClient:
         timeout: Optional[int] = None,
         service_key: Optional[str] = None,
         client: Optional[httpx.AsyncClient] = None,
+        require_user_token: bool = False,
     ):
         self.base_url = (base_url or settings.ERP_BASE_URL).rstrip("/")
         self.token = (token or settings.ERP_API_TOKEN or "").strip() or None
@@ -123,6 +124,7 @@ class DjangoCoreClient:
         self.service_key = service_key or settings.ERP_API_TOKEN
         self._external_client = client is not None
         self.client = client or httpx.AsyncClient(timeout=self.timeout)
+        self.require_user_token = bool(require_user_token)
 
     async def __aenter__(self) -> "DjangoCoreClient":
         return self
@@ -218,7 +220,14 @@ class DjangoCoreClient:
         Internal async request helper with user token forwarding, service key,
         structured status code error mapping, and envelope unwrapping.
         """
-        active_token = user_token or self.token
+        clean_user_token = (user_token or "").strip() or None
+        if self.require_user_token and not clean_user_token:
+            raise DjangoAuthError(
+                "Autentikasi pengguna (user_token) diperlukan.",
+                status_code=401,
+            )
+
+        active_token = clean_user_token or self.token
         if not active_token:
             active_token = await self.login()
 
@@ -262,7 +271,7 @@ class DjangoCoreClient:
             )
 
         if resp.status_code == 401:
-            if not user_token and retries > 0:
+            if not clean_user_token and not self.require_user_token and retries > 0:
                 logger.warning("System JWT token expired (401). Attempting re-login...")
                 await self.login()
                 return await self._request(

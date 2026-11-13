@@ -3,10 +3,12 @@ Main FastAPI application entry point for ERP AI Orchestrator.
 """
 import asyncio
 from contextlib import asynccontextmanager
+import hmac
 import logging
-from typing import Any, Dict, Optional
+import re
+from typing import Annotated, Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, status
 
 from app.core.config import settings
 from app.graph.workflow import arun_workflow
@@ -46,6 +48,53 @@ async def health_check():
     return {"status": "healthy"}
 
 
+def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
+    """Extract JWT token from an Authorization: Bearer <token> header."""
+    if not authorization or not isinstance(authorization, str):
+        return None
+    match = re.match(r"^\s*Bearer\s+(.+?)\s*$", authorization, re.IGNORECASE)
+    if not match:
+        return None
+    token = match.group(1).strip()
+    return token or None
+
+
+def _resolve_and_validate_auth(
+    payload: ChatRequest,
+    authorization: Optional[str] = None,
+    x_internal_service_key: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Resolve user JWT from body user_token or Authorization Bearer header,
+    optionally enforce X-Internal-Service-Key, and reject missing user tokens
+    in production or when REQUIRE_USER_TOKEN is enabled.
+    """
+    if settings.REQUIRE_SERVICE_KEY:
+        expected_key = (settings.ERP_API_TOKEN or "").strip()
+        provided_key = (x_internal_service_key or "").strip()
+        if not expected_key or not hmac.compare_digest(provided_key, expected_key):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: invalid or missing X-Internal-Service-Key.",
+            )
+
+    body_token = (payload.user_token or "").strip() or None
+    header_token = _extract_bearer_token(authorization)
+    effective_token = body_token or header_token
+
+    is_strict_mode = (
+        settings.APP_ENV.strip().lower() == "production"
+        or bool(settings.REQUIRE_USER_TOKEN)
+    )
+    if is_strict_mode and not effective_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required: valid user_token or Authorization Bearer header must be provided.",
+        )
+
+    return effective_token
+
+
 @app.post(
     "/api/v1/chat",
     response_model=ChatResponse,
@@ -53,14 +102,24 @@ async def health_check():
     summary="Execute conversational AI workflow for FastPrint ERP",
     tags=["Chat"],
 )
-async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
+async def chat_endpoint(
+    payload: ChatRequest,
+    authorization: Annotated[Optional[str], Header()] = None,
+    x_internal_service_key: Annotated[Optional[str], Header(alias="X-Internal-Service-Key")] = None,
+) -> ChatResponse:
     """
     Handle natural language ERP inquiries via LangGraph StateGraph pipeline.
     """
     try:
+        effective_token = _resolve_and_validate_auth(
+            payload=payload,
+            authorization=authorization,
+            x_internal_service_key=x_internal_service_key,
+        )
+
         workflow_kwargs = {
             "user_query": payload.query,
-            "user_token": payload.user_token,
+            "user_token": effective_token,
             "company_id": payload.company_id,
             "thread_id": payload.thread_id,
         }
@@ -89,9 +148,14 @@ async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
         raise
     except Exception as exc:
         logger.exception("Unhandled error processing chat endpoint request: %s", exc)
+        detail = (
+            "Chat workflow failed due to an internal server error."
+            if settings.APP_ENV.strip().lower() == "production"
+            else f"Chat workflow failed: {str(exc)}"
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Chat workflow failed: {str(exc)}",
+            detail=detail,
         )
 
 

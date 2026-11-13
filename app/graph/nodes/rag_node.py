@@ -60,7 +60,7 @@ async def rag_node(
     # Path 2: Fallback / standard path via Django Core API client
     if not chunks and (client is not None or not settings.VECTOR_DB_URL):
         own_client = client is None
-        erp_client = client or DjangoCoreClient()
+        erp_client = client or DjangoCoreClient(require_user_token=settings.REQUIRE_USER_TOKEN)
         try:
             raw_res = await erp_client.fetch_knowledge(
                 params={

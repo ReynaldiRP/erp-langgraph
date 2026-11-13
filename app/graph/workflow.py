@@ -6,10 +6,13 @@ and multi-turn conversational memory.
 """
 import atexit
 import asyncio
+from collections import OrderedDict
 import concurrent.futures
 import logging
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import uuid
+import weakref
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph, START, END
@@ -211,6 +214,168 @@ def _hydrate_messages_from_history(
     return hydrated
 
 
+_CHECKPOINT_LRU_LOCK = threading.Lock()
+_CHECKPOINT_LRU_REGISTRY: "weakref.WeakKeyDictionary[Any, OrderedDict[str, None]]" = weakref.WeakKeyDictionary()
+
+
+def _get_or_create_lru(checkpointer: Any) -> "OrderedDict[str, None]":
+    """Retrieve or initialize the OrderedDict tracking LRU thread order for a checkpointer."""
+    try:
+        lru = _CHECKPOINT_LRU_REGISTRY.get(checkpointer)
+        if lru is None:
+            lru = OrderedDict()
+            _CHECKPOINT_LRU_REGISTRY[checkpointer] = lru
+        return lru
+    except TypeError:
+        # Fallback for custom checkpointers that are not weak-referenceable
+        lru = getattr(checkpointer, "_lru_order", None)
+        if lru is None:
+            lru = OrderedDict()
+            setattr(checkpointer, "_lru_order", lru)
+        return lru
+
+
+def _delete_thread_from_checkpointer(checkpointer: Any, thread_id: str) -> None:
+    """Remove all stored checkpoints, writes, and blobs for thread_id."""
+    if checkpointer is None or not thread_id:
+        return
+    if hasattr(checkpointer, "delete_thread"):
+        try:
+            checkpointer.delete_thread(thread_id)
+            return
+        except Exception as exc:
+            logger.debug("delete_thread failed for '%s': %s", thread_id, exc)
+    storage = getattr(checkpointer, "storage", None)
+    if isinstance(storage, dict):
+        storage.pop(thread_id, None)
+
+
+def _touch_checkpoint_lru(graph: Any, thread_id: str) -> None:
+    """Mark an existing thread_id as most recently used in the checkpointer's LRU tracker."""
+    checkpointer = getattr(graph, "checkpointer", None)
+    storage = getattr(checkpointer, "storage", None)
+    if checkpointer is None or not isinstance(storage, dict) or not thread_id:
+        return
+    if thread_id not in storage:
+        return
+    with _CHECKPOINT_LRU_LOCK:
+        lru = _get_or_create_lru(checkpointer)
+        lru[thread_id] = None
+        lru.move_to_end(thread_id, last=True)
+
+
+def _cleanup_ephemeral_thread(graph: Any, thread_id: str) -> None:
+    """Immediately delete an ephemeral thread's state so stateless requests consume 0 RAM."""
+    if not thread_id:
+        return
+    checkpointer = getattr(graph, "checkpointer", None)
+    storage = getattr(checkpointer, "storage", None)
+    if checkpointer is None or not isinstance(storage, dict):
+        return
+    with _CHECKPOINT_LRU_LOCK:
+        _delete_thread_from_checkpointer(checkpointer, thread_id)
+        try:
+            lru = _CHECKPOINT_LRU_REGISTRY.get(checkpointer)
+        except TypeError:
+            lru = getattr(checkpointer, "_lru_order", None)
+        if lru is not None:
+            lru.pop(thread_id, None)
+
+
+def _enforce_checkpoint_lru_bound(
+    graph: Any,
+    active_thread_id: str,
+    max_threads: Optional[int] = None,
+) -> int:
+    """
+    Enforce a bounded LRU limit on MemorySaver threads for the given compiled graph.
+    Evicts the least-recently-used threads when len(storage) exceeds max_threads.
+
+    Returns:
+        Number of evicted threads.
+    """
+    checkpointer = getattr(graph, "checkpointer", None)
+    storage = getattr(checkpointer, "storage", None)
+    if checkpointer is None or not isinstance(storage, dict):
+        return 0
+
+    raw_limit = settings.MAX_CHECKPOINT_THREADS if max_threads is None else max_threads
+    limit = max(0, int(raw_limit))
+    evicted = 0
+
+    with _CHECKPOINT_LRU_LOCK:
+        lru = _get_or_create_lru(checkpointer)
+
+        # Reconcile LRU keys with storage (drop externally removed, add externally inserted)
+        for existing_tid in list(lru.keys()):
+            if existing_tid not in storage:
+                lru.pop(existing_tid, None)
+        for tid in list(storage.keys()):
+            if tid not in lru:
+                lru[tid] = None
+
+        if active_thread_id and active_thread_id in storage:
+            lru[active_thread_id] = None
+            lru.move_to_end(active_thread_id, last=True)
+
+        while len(storage) > limit:
+            if lru:
+                oldest_tid, _ = lru.popitem(last=False)
+            else:
+                oldest_tid = next(iter(storage))
+            _delete_thread_from_checkpointer(checkpointer, oldest_tid)
+            evicted += 1
+
+    return evicted
+
+
+async def _prepare_workflow_execution(
+    user_query: str,
+    user_token: Optional[str] = None,
+    company_id: Optional[int] = None,
+    thread_id: Optional[str] = None,
+    graph: Optional[Any] = None,
+    history: Optional[List[Any]] = None,
+) -> Tuple[Any, Dict[str, Any], AgentState, bool, str]:
+    """
+    Resolve thread isolation, checkpoint state, and hydrated initial state for workflow execution.
+    Requests without thread_id use a unique ephemeral ID to avoid cross-user leakage.
+    """
+    active_graph = graph or default_workflow_graph
+    normalized_thread_id = str(thread_id).strip() if thread_id is not None else ""
+    is_ephemeral = not bool(normalized_thread_id)
+    effective_thread_id = f"ephemeral_{uuid.uuid4().hex}" if is_ephemeral else normalized_thread_id
+    config = {"configurable": {"thread_id": effective_thread_id}}
+
+    checkpoint = None
+    if not is_ephemeral:
+        try:
+            checkpoint = await active_graph.aget_state(config)
+        except Exception:
+            pass
+        _touch_checkpoint_lru(active_graph, effective_thread_id)
+
+    # Multi-turn company ID persistence across turns in the same thread session
+    effective_company_id = company_id
+    if effective_company_id is None or effective_company_id == settings.DEFAULT_COMPANY_ID:
+        if checkpoint and checkpoint.values and checkpoint.values.get("company_id"):
+            effective_company_id = checkpoint.values["company_id"]
+
+    # History hydration for stateless requests or recovery after checkpoint eviction/restart
+    hydrated_messages = None
+    existing_messages = checkpoint.values.get("messages", []) if (checkpoint and checkpoint.values) else []
+    if not existing_messages and history:
+        hydrated_messages = _hydrate_messages_from_history(history, user_query)
+
+    initial_state = create_initial_state(
+        user_query=user_query,
+        user_token=user_token,
+        company_id=effective_company_id,
+        messages=hydrated_messages,
+    )
+    return active_graph, config, initial_state, is_ephemeral, effective_thread_id
+
+
 async def arun_workflow(
     user_query: str,
     user_token: Optional[str] = None,
@@ -233,36 +398,29 @@ async def arun_workflow(
     Returns:
         Final resulting AgentState dictionary.
     """
-    active_graph = graph or default_workflow_graph
-    config = {"configurable": {"thread_id": thread_id or "default_session"}}
-
-    checkpoint = None
-    try:
-        checkpoint = await active_graph.aget_state(config)
-    except Exception:
-        pass
-
-    # Multi-turn company ID persistence across turns in the same thread session
-    effective_company_id = company_id
-    if effective_company_id is None or effective_company_id == settings.DEFAULT_COMPANY_ID:
-        if checkpoint and checkpoint.values and checkpoint.values.get("company_id"):
-            effective_company_id = checkpoint.values["company_id"]
-
-    # History hydration for stateless recovery (e.g. after worker reload/service restart)
-    hydrated_messages = None
-    existing_messages = checkpoint.values.get("messages", []) if (checkpoint and checkpoint.values) else []
-    if not existing_messages and history:
-        hydrated_messages = _hydrate_messages_from_history(history, user_query)
-
-    initial_state = create_initial_state(
-        user_query=user_query,
-        user_token=user_token,
-        company_id=effective_company_id,
-        messages=hydrated_messages,
+    active_graph, config, initial_state, is_ephemeral, effective_thread_id = (
+        await _prepare_workflow_execution(
+            user_query=user_query,
+            user_token=user_token,
+            company_id=company_id,
+            thread_id=thread_id,
+            graph=graph,
+            history=history,
+        )
     )
 
-    final_state = await active_graph.ainvoke(initial_state, config=config)
-    return final_state
+    try:
+        final_state = await active_graph.ainvoke(initial_state, config=config)
+        return final_state
+    finally:
+        if is_ephemeral:
+            _cleanup_ephemeral_thread(active_graph, effective_thread_id)
+        else:
+            _enforce_checkpoint_lru_bound(
+                active_graph,
+                effective_thread_id,
+                max_threads=settings.MAX_CHECKPOINT_THREADS,
+            )
 
 
 async def astream_workflow_steps(
@@ -277,33 +435,33 @@ async def astream_workflow_steps(
     Asynchronously stream individual node completion events from the workflow StateGraph.
     Yields tuples of (node_name, node_update_dict, accumulated_state_dict).
     """
-    active_graph = graph or default_workflow_graph
-    config = {"configurable": {"thread_id": thread_id or "default_session"}}
-
-    checkpoint = None
-    try:
-        checkpoint = await active_graph.aget_state(config)
-    except Exception:
-        pass
-
-    hydrated_messages = None
-    existing_messages = checkpoint.values.get("messages", []) if (checkpoint and checkpoint.values) else []
-    if not existing_messages and history:
-        hydrated_messages = _hydrate_messages_from_history(history, user_query)
-
-    initial_state = create_initial_state(
-        user_query=user_query,
-        user_token=user_token,
-        company_id=company_id,
-        messages=hydrated_messages,
+    active_graph, config, initial_state, is_ephemeral, effective_thread_id = (
+        await _prepare_workflow_execution(
+            user_query=user_query,
+            user_token=user_token,
+            company_id=company_id,
+            thread_id=thread_id,
+            graph=graph,
+            history=history,
+        )
     )
     accumulated_state = dict(initial_state)
 
-    async for chunk in active_graph.astream(initial_state, config=config, stream_mode="updates"):
-        for node_name, update in chunk.items():
-            if isinstance(update, dict):
-                accumulated_state.update(update)
-            yield (node_name, update, accumulated_state)
+    try:
+        async for chunk in active_graph.astream(initial_state, config=config, stream_mode="updates"):
+            for node_name, update in chunk.items():
+                if isinstance(update, dict):
+                    accumulated_state.update(update)
+                yield (node_name, update, accumulated_state)
+    finally:
+        if is_ephemeral:
+            _cleanup_ephemeral_thread(active_graph, effective_thread_id)
+        else:
+            _enforce_checkpoint_lru_bound(
+                active_graph,
+                effective_thread_id,
+                max_threads=settings.MAX_CHECKPOINT_THREADS,
+            )
 
 
 _WORKFLOW_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None

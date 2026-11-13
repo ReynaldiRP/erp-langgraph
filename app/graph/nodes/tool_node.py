@@ -141,7 +141,7 @@ async def tool_node(
     """
     user_token = state.get("user_token")
     own_client = client is None
-    erp_client = client or DjangoCoreClient()
+    erp_client = client or DjangoCoreClient(require_user_token=settings.REQUIRE_USER_TOKEN)
 
     try:
         # Dynamic Tool Dispatch Registry
